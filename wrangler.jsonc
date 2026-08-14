@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "shuiyin-edge-server",
+  "main": "src/cloudflare.js",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
+  "minify": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "kv_namespaces": [
+    {
+      "binding": "PROVENANCE_KV"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGIN": "https://shuiyin.nnu.cn",
+    "WECHAT_APP_ID": "wx9321e5acb8f5745e"
+  },
+  "secrets": {
+    "required": ["WECHAT_APP_SECRET"]
+  }
+}

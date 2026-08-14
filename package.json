@@ -1,0 +1,19 @@
+{
+  "name": "shuiyin-edge-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "tsc --noEmit && wrangler deploy --dry-run",
+    "edgeone:build": "node scripts/build-edgeone.mjs",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "cf:types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.123.0"
+  }
+}
