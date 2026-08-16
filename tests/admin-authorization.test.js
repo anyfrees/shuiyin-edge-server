@@ -1,0 +1,7 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { ADMIN_AUTHORIZATION_SQL,ADMIN_ROLES,evaluateAdminAccess,validateDelegation } from '../src/admin-authorization.js'
+
+test('Edge authorization parity denies either side of a cross-scope group grant',()=>{const a={superAdmin:false,permissions:new Set(ADMIN_ROLES.GRANT_ADMIN),templateScope:new Set(['tpl_x']),groupScope:new Set(['grp_a'])};assert.equal(evaluateAdminAccess(a,{permission:'grant.group',templateId:'tpl_x',groupId:'grp_a'}),true);assert.equal(evaluateAdminAccess(a,{permission:'grant.group',templateId:'tpl_y',groupId:'grp_a'}),false);assert.equal(evaluateAdminAccess(a,{permission:'grant.group',templateId:'tpl_x',groupId:'grp_b'}),false)})
+test('Edge delegation parity prevents privilege and scope amplification',()=>{const a={superAdmin:false,permissions:new Set(ADMIN_ROLES.GRANT_ADMIN),templateScope:new Set(['tpl_x']),groupScope:new Set(['grp_a'])};assert.equal(validateDelegation(a,{roles:['GRANT_ADMIN'],templateScopes:['tpl_x'],groupScopes:['grp_a']}),true);assert.equal(validateDelegation(a,{roles:['SUPER_ADMIN'],templateScopes:[],groupScopes:[]}),false);assert.equal(validateDelegation(a,{roles:['GRANT_ADMIN'],templateScopes:['tpl_y'],groupScopes:['grp_a']}),false)})
+test('Edge schema normalizes role and both resource scopes',()=>{for(const table of ['admin_principals','admin_role_assignments','admin_template_scopes','admin_group_scopes','admin_audit_logs'])assert.match(ADMIN_AUTHORIZATION_SQL,new RegExp(table))})
