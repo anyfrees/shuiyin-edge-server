@@ -1,3 +1,4 @@
+// @ts-nocheck -- generated from shared template-package-core
 // packages/template-package-core/src/storage.js
 var failure = (code) => Object.assign(new Error(code), { code });
 var key = (id, v, type) => {
@@ -337,7 +338,7 @@ var TemplatePublishService = class {
       const remote = await this.storage.getPackage(templateId, Number(templateVersion)), metadata = await this.storage.getMetadata(templateId, Number(templateVersion));
       if (!remote || Number(metadata?.size ?? remote.byteLength) !== built.bytes.byteLength || !await this.validateRemote(remote, built, templateId, Number(templateVersion))) throw fail2("TEMPLATE_STORAGE_VERIFY_FAILED", 502);
       await this.updateOp(op, "VERIFIED");
-      const publishedAt = this.now(), published = { ...version, status: "PUBLISHED", contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, packageSha256: built.artifactSha256, packageSize: built.bytes.byteLength, signature: built.manifest.signature.value, packageSignature: built.manifest.signature.value, signatureKeyId: key2.keyId, packageKeyId: key2.keyId, internalObjectRef: op.objectRef, publishedAt, publishedBy: actorId, draft: void 0 }, audit = { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) };
+      const publishedAt = this.now(), published = { ...version, status: "PUBLISHED", previewLayout: structuredClone(draft.layout), contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, packageSha256: built.artifactSha256, packageSize: built.bytes.byteLength, signature: built.manifest.signature.value, packageSignature: built.manifest.signature.value, signatureKeyId: key2.keyId, packageKeyId: key2.keyId, internalObjectRef: op.objectRef, publishedAt, publishedBy: actorId, draft: void 0 }, audit = { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) };
       await this.updateOp(op, "COMMITTING");
       try {
         await this.repository.commitPublished({ version: published, template: { ...template, latestVersion: Math.max(Number(template.latestVersion) || 0, Number(templateVersion)), updatedAt: publishedAt, publishedAt }, audit, operation: { ...op, status: "COMPLETED", updatedAt: this.now() } });

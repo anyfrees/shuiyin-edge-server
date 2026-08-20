@@ -483,6 +483,8 @@ var handle = async ({
         return json(await publishService.atomicRequests.get(requestId));
       const operation = (async () => {
         const meta = { ...body.template || {}, enabled: false, latestVersion: 0 };
+        if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(meta.visibility) && (!meta.offlinePolicy?.allowed || Number(meta.offlinePolicy?.leaseHours) <= 0))
+          meta.offlinePolicy = { allowed: true, leaseHours: 24 };
         const draft = body.version || {};
         const key = publishService.activeKey();
         const assetBytes = (draft.assets || []).map((asset) => ({
