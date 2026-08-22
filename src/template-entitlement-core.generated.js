@@ -512,7 +512,29 @@ var handle = async ({
             return { ...publishService.response(publishedVersion), recovered: true };
           }
           stage = "CREATE_VERSION";
-          await service.createVersion(meta.templateId, draft, actor);
+          try {
+            await service.createVersion(meta.templateId, draft, actor);
+          } catch (error) {
+            const existingVersion = await service.repository.getVersion(
+              meta.templateId,
+              Number(draft.templateVersion)
+            );
+            if (existingVersion?.status !== "PUBLISHED") throw error;
+            stage = "ACTIVATE_TEMPLATE";
+            await service.updateTemplate(
+              meta.templateId,
+              {
+                enabled: body.template?.enabled !== false,
+                lifecycleStatus: "ACTIVE",
+                deletedAt: null
+              },
+              actor
+            );
+            return {
+              ...publishService.response(existingVersion),
+              recovered: true
+            };
+          }
           stage = "BUILD_SIGN_VERIFY_UPLOAD";
           const result = await publishService.publish({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), actorId: actor, requestId });
           stage = "ACTIVATE_TEMPLATE";
