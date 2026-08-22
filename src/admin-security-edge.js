@@ -44,14 +44,17 @@ const cbor = (bytes, start = 0) => { let offset=start;const readLength=info=>{if
 const clientData = response => { const raw=fromB64u(response.response.clientDataJSON),value=JSON.parse(dec.decode(raw));return{raw,value} }
 const verifyClient = async (response, challenge, origins, type) => { const data=clientData(response);if(data.value.type!==type||data.value.challenge!==challenge||!origins.includes(data.value.origin))throw fail('PASSKEY_INVALID',400);return data.raw }
 const rpHashValid = async (authData, rpId) => timingSafe(b64u(authData.slice(0,32)),b64u(new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(rpId)))))
+const P256_SPKI_PREFIX=Uint8Array.of(0x30,0x59,0x30,0x13,0x06,0x07,0x2a,0x86,0x48,0xce,0x3d,0x02,0x01,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07,0x03,0x42,0x00,0x04)
 const coseKey = async cose => {
   const map=cbor(cose).value,kty=map.get(1),alg=map.get(3)
   if(kty===2&&alg===-7){
-    const key=await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:b64u(map.get(-2)),y:b64u(map.get(-3)),ext:true},{name:'ECDSA',namedCurve:'P-256'},false,['verify'])
+    const x=map.get(-2),y=map.get(-3)
+    if(!(x instanceof Uint8Array)||x.length!==32||!(y instanceof Uint8Array)||y.length!==32)throw fail('PASSKEY_INVALID',400)
+    const key=await crypto.subtle.importKey('spki',concat(P256_SPKI_PREFIX,x,y),{name:'ECDSA',namedCurve:'P-256'},false,['verify'])
     return {key,verifyAlgorithm:{name:'ECDSA',hash:'SHA-256'},ecdsa:true}
   }
   if(kty===3&&alg===-257){
-    const key=await crypto.subtle.importKey('jwk',{kty:'RSA',n:b64u(map.get(-1)),e:b64u(map.get(-2)),alg:'RS256',ext:true},{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify'])
+    const key=await crypto.subtle.importKey('jwk',{kty:'RSA',n:b64u(map.get(-1)),e:b64u(map.get(-2)),alg:'RS256',ext:true,key_ops:['verify'],use:'sig'},{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify'])
     return {key,verifyAlgorithm:{name:'RSASSA-PKCS1-v1_5'},ecdsa:false}
   }
   throw fail('PASSKEY_ALGORITHM_UNSUPPORTED',400)
