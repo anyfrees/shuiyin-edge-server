@@ -9,7 +9,7 @@ class Kv {
   async get(key) { return this.data.get(key) ?? null }
   async put(key, value) { this.data.set(key, value) }
   async delete(key) { this.data.delete(key) }
-  async list({ prefix = '' }) { return { keys: [...this.data.keys()].filter(key => key.startsWith(prefix)).map(name => ({ name })), list_complete: true } }
+  async list({ prefix = '', limit = 100 }) { if(limit>256)throw new Error('KV_LIMIT_EXCEEDED');return { keys: [...this.data.keys()].filter(key => key.startsWith(prefix)).slice(0,limit).map(name => ({ name })), list_complete: true } }
 }
 const migration = async password => {
   const salt = new Uint8Array(16); crypto.getRandomValues(salt)
@@ -28,6 +28,14 @@ test('signed migration preserves an Argon2 password and issues a CSRF-bound admi
   response = await invoke(handler, '/admin/v1/console/me', { headers: { cookie: sessionCookie } })
   assert.equal(response.status, 200)
   assert.equal((await response.json()).admin.superAdmin, true)
+  await kv.put('subject_sub_test',JSON.stringify({subjectId:'sub_test',publicId:'JL-TEST01',status:'active',internal:false,createdAt:1,lastSeenAt:2}))
+  await kv.put('public_JL-TEST01','sub_test')
+  response=await invoke(handler,'/admin/v1/console/dashboard',{headers:{cookie:sessionCookie}})
+  assert.equal(response.status,200)
+  response=await invoke(handler,'/admin/v1/console/subjects',{headers:{cookie:sessionCookie}})
+  assert.equal(response.status,200);assert.equal((await response.json()).items[0].publicId,'JL-TEST01')
+  response=await invoke(handler,'/admin/v1/console/subjects/JL-TEST01/access',{headers:{cookie:sessionCookie}})
+  assert.equal(response.status,200);assert.equal((await response.json()).subject.publicId,'JL-TEST01')
   response = await invoke(handler, '/admin/v1/console/auth/logout', { method: 'POST', body: {}, headers: { cookie: sessionCookie, 'x-csrf-token': login.csrfToken } })
   assert.equal(response.status, 204)
 })

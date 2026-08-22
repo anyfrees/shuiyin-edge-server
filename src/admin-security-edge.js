@@ -25,6 +25,16 @@ const list = async (kv, prefix) => {
   } while (cursor)
   return values
 }
+const listValues = async (kv, prefix) => {
+  const values=[];let cursor
+  do{const page=await kv.list({prefix,limit:100,...(cursor?{cursor}:{})});for(const item of page.keys||[]){const name=item.name||item.key,value=parse(await kv.get(name));if(value)values.push(value)}cursor=page.list_complete===true||page.complete===true?'':page.cursor}while(cursor)
+  return values
+}
+const countKeys = async (kv, prefix) => {
+  let count=0,cursor
+  do{const page=await kv.list({prefix,limit:100,...(cursor?{cursor}:{})});count+=(page.keys||[]).length;cursor=page.list_complete===true||page.complete===true?'':page.cursor}while(cursor)
+  return count
+}
 const timingSafe = (left, right) => {
   const a = enc.encode(String(left)), b = enc.encode(String(right)); if (a.length !== b.length) return false
   let different = 0; for (let index = 0; index < a.length; index++) different |= a[index] ^ b[index]; return different === 0
@@ -217,7 +227,26 @@ export const createEdgeAdminHandler = ({ kv, env, forward }) => async request =>
     if (path === '/auth/logout' && method === 'POST') { const access = await service.authenticate(request, true); access.session.revokedAt = Date.now(); await put(kv, 'session', access.session.sessionHash, access.session); return new Response(null, { status: 204, headers: { 'Set-Cookie': 'jilu_admin_session=; Path=/admin/; HttpOnly; SameSite=Strict; Max-Age=0; Secure' } }) }
     const access = await service.authenticate(request, !['GET','HEAD'].includes(method))
     if (path === '/me' && method === 'GET') return json({ ok: true, admin: { adminId: access.principal.adminId, username: access.principal.username, displayName: access.principal.displayName, roles: [...access.roles], permissions: [...access.permissions], templateScopes: [...access.templateScope], groupScopes: [...access.groupScope], superAdmin: access.superAdmin, totpEnabled: Boolean(access.principal.totpEnabled), hasPassword: Boolean(access.principal.passwordHash), sessionMethod: access.session.authMethod } })
-    if (path === '/dashboard' && method === 'GET') { const sessions=(await list(kv,'session')).filter(x=>!x.revokedAt&&x.expiresAt>Date.now()&&(access.superAdmin||x.adminId===access.principal.adminId)).length,templates=(await kv.list({prefix:'te_tpl_',limit:1000})).keys?.length||0,groups=(await kv.list({prefix:'te_grp_',limit:1000})).keys?.length||0;return json({ok:true,counts:{sessions,templates:access.superAdmin?templates:access.templateScope.size,groups:access.superAdmin?groups:access.groupScope.size}}) }
+    if (path === '/dashboard' && method === 'GET') { const sessions=(await list(kv,'session')).filter(x=>!x.revokedAt&&x.expiresAt>Date.now()&&(access.superAdmin||x.adminId===access.principal.adminId)).length,templates=await countKeys(kv,'te_tpl_'),groups=await countKeys(kv,'te_grp_');return json({ok:true,counts:{sessions,templates:access.superAdmin?templates:access.templateScope.size,groups:access.superAdmin?groups:access.groupScope.size}}) }
+    if(path==='/subjects'&&method==='GET'){
+      await service.require(access,{permission:'template.read'})
+      const subjects=await listValues(kv,'subject_'),direct=access.superAdmin?[]:await listValues(kv,'te_dg_'),memberships=access.superAdmin?[]:await listValues(kv,'te_mem_'),visible=new Set()
+      if(!access.superAdmin){for(const grant of direct)if(access.templateScope.has(grant.templateId))visible.add(grant.subjectId);for(const membership of memberships)if(access.groupScope.has(membership.groupId))visible.add(membership.subjectId)}
+      const selected=subjects.filter(subject=>access.superAdmin||visible.has(subject.subjectId)),items=await Promise.all(selected.map(async subject=>{const metadata=await get(kv,'subject-meta',subject.subjectId);const remarkName=clean(metadata?.remarkName,80);return{publicId:subject.publicId,remarkName,displayName:remarkName||subject.publicId,status:subject.status,internal:Boolean(subject.internal),createdAt:subject.createdAt,lastSeenAt:subject.lastSeenAt}}))
+      items.sort((a,b)=>Number(b.lastSeenAt||0)-Number(a.lastSeenAt||0));return json({ok:true,items})
+    }
+    const subjectMatch=path.match(/^\/subjects\/([^/]+)$/),subjectAccessMatch=path.match(/^\/subjects\/([^/]+)\/access$/)
+    if(subjectAccessMatch&&method==='GET'){
+      await service.require(access,{permission:'template.read'});const publicId=decodeURIComponent(subjectAccessMatch[1]),subjectId=await kv.get(`public_${publicId}`),subject=subjectId&&parse(await kv.get(`subject_${subjectId}`));if(!subject)throw fail('SUBJECT_NOT_FOUND',404)
+      const directGrants=(await listValues(kv,`te_dg_${subjectId}_`)).filter(item=>access.superAdmin||access.templateScope.has(item.templateId)),memberships=(await listValues(kv,`te_mem_${subjectId}_`)).filter(item=>access.superAdmin||access.groupScope.has(item.groupId)),groupGrants=(await listValues(kv,'te_gg_')).filter(item=>memberships.some(member=>member.groupId===item.groupId)&&(access.superAdmin||access.templateScope.has(item.templateId))),metadata=await get(kv,'subject-meta',subjectId),remarkName=clean(metadata?.remarkName,80)
+      return json({ok:true,subject:{publicId:subject.publicId,remarkName,displayName:remarkName||subject.publicId,status:subject.status,createdAt:subject.createdAt,lastSeenAt:subject.lastSeenAt},directGrants,memberships,groupGrants})
+    }
+    if(subjectMatch&&method==='PATCH'){
+      await service.require(access,{permission:'grant.user'});const publicId=decodeURIComponent(subjectMatch[1]),subjectId=await kv.get(`public_${publicId}`),subject=subjectId&&parse(await kv.get(`subject_${subjectId}`));if(!subject)throw fail('SUBJECT_NOT_FOUND',404);const remarkName=clean((await bodyOf(request)).remarkName,80).trim();await put(kv,'subject-meta',subjectId,{remarkName,updatedBy:access.principal.adminId,updatedAt:Date.now()});try{await service.audit(access.principal.adminId,'SUBJECT_REMARK_UPDATE','subject',publicId,'SUCCESS',{remarkName})}catch{}return json({ok:true,subject:{publicId,remarkName,displayName:remarkName||publicId}})
+    }
+    if(subjectMatch&&method==='DELETE'){
+      await service.require(access,{permission:'grant.user'});const publicId=decodeURIComponent(subjectMatch[1]),subjectId=await kv.get(`public_${publicId}`),subject=subjectId&&parse(await kv.get(`subject_${subjectId}`));if(!subject)throw fail('SUBJECT_NOT_FOUND',404);if(subject.internal)throw fail('INTERNAL_SUBJECT_DELETE_DENIED',409);subject.status='disabled';subject.updatedAt=Date.now();await kv.put(`subject_${subjectId}`,JSON.stringify(subject));try{await service.audit(access.principal.adminId,'SUBJECT_DELETE','subject',publicId)}catch{}return new Response(null,{status:204})
+    }
     if (path === '/administrators' && method === 'GET') { await service.require(access, { permission: 'admin.read' }); return json({ ok: true, items: (await list(kv, 'principal')).map(publicPrincipal) }) }
     if (path === '/administrators' && method === 'POST') return json({ ok: true, admin: await service.createPrincipal(access, await bodyOf(request)) }, 201)
     const adminMatch = path.match(/^\/administrators\/([^/]+)$/)
