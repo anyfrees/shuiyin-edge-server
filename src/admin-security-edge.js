@@ -140,11 +140,14 @@ export class EdgeAdminSecurityService {
       stage='CHALLENGE'; const challenge = await this.consumeChallenge(admin.adminId, 'AUTHENTICATE')
       stage='CLIENT'; const clientRaw=await verifyClient(response,challenge.challenge,this.origins,'webauthn.get')
       stage='AUTH_DATA'; const authData=fromB64u(response.response.authenticatorData)
-      stage='RP'; if(!await rpHashValid(authData,this.rpId)||(authData[32]&5)!==5)throw fail('ADMIN_LOGIN_FAILED',401)
+      stage='RP'; if(!await rpHashValid(authData,this.rpId)||(authData[32]&5)!==5)throw fail('PASSKEY_RP_INVALID',401)
       stage='SIGNED_DATA'; const counter=new DataView(authData.buffer,authData.byteOffset+33,4).getUint32(0),signed=concat(authData,new Uint8Array(await crypto.subtle.digest('SHA-256',clientRaw)))
       stage='PUBLIC_KEY'; const material=await coseKey(fromB64u(passkey.publicKey)),signature=fromB64u(response.response.signature)
-      stage='SIGNATURE'; const verified=await crypto.subtle.verify(material.verifyAlgorithm,material.key,material.ecdsa?derToRaw(signature):signature,signed)
-      if(!verified||(passkey.counter&&counter<=passkey.counter))throw fail('ADMIN_LOGIN_FAILED',401)
+      stage='SIGNATURE'; let verified=false
+      try{verified=await crypto.subtle.verify(material.verifyAlgorithm,material.key,material.ecdsa?derToRaw(signature):signature,signed)}catch{}
+      if(!verified&&material.ecdsa)try{verified=await crypto.subtle.verify(material.verifyAlgorithm,material.key,signature,signed)}catch{}
+      if(!verified)throw fail('PASSKEY_SIGNATURE_INVALID',401)
+      if(passkey.counter&&counter<=passkey.counter)throw fail('PASSKEY_COUNTER_INVALID',401)
       stage='CREDENTIAL_SAVE'; passkey.counter=counter; passkey.lastUsedAt = this.now(); await put(this.kv, 'passkey', passkey.credentialId, passkey)
       stage='SESSION'; const session=await this.issueSession(admin, 'PASSKEY')
       try{await this.audit(admin.adminId, 'ADMIN_LOGIN_SUCCESS', '', '', 'SUCCESS', { method: 'PASSKEY' })}catch{}
