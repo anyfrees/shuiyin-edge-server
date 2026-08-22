@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { onRequest } from '../edge-functions/[[default]].js'
+import { makersKv } from '../src/edgeone.js'
 
 const emptyBlob = {
   async get() { return null },
@@ -49,6 +50,21 @@ test('Makers catch-all preserves API CORS preflight', async () => {
   assert.equal(response.status, 204)
   assert.equal(response.headers.get('access-control-allow-origin'), 'https://shuiyin.nnu.cn')
   assert.match(response.headers.get('access-control-allow-headers') || '', /Authorization/)
+})
+
+test('Makers KV adapter uses the documented delete signature and normalizes list keys', async () => {
+  let deleteArguments = 0
+  const kv = makersKv({
+    async get() { return null },
+    async put() {},
+    async delete(...args) { deleteArguments = args.length },
+    async list() { return { complete: true, cursor: null, keys: [{ key: 'admin:challenge:test' }] } },
+  })
+  await kv.delete('admin:challenge:test')
+  const page = await kv.list({ prefix: 'admin:' })
+  assert.equal(deleteArguments, 1)
+  assert.equal(page.keys[0].name, 'admin:challenge:test')
+  assert.equal(page.list_complete, true)
 })
 
 test('EdgeOne build bundles the root multi-level route and runtime dependencies', async () => {

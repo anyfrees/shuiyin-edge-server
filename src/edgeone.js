@@ -2,11 +2,14 @@ import { handleRequest } from './core.js'
 import { getStore } from '@edgeone/pages-blob'
 
 const runtimeBinding = (env, bindings, name) => env?.[name] || bindings?.[name]
-const makersKv = binding => binding && ({
+export const makersKv = binding => binding && ({
   get: (key, options = {}) => binding.get(key, options),
   put: (key, value, options = {}) => binding.put(key, value, options),
-  delete: (key, options = {}) => binding.delete(key, options),
-  list: (options = {}) => binding.list(options),
+  delete: key => binding.delete(key),
+  list: async (options = {}) => {
+    const page=await binding.list(options)
+    return {...page,keys:(page.keys||[]).map(item=>({ ...item, name:item.name||item.key })),list_complete:page.list_complete===true||page.complete===true}
+  },
 })
 
 const asArrayBuffer = value => {
