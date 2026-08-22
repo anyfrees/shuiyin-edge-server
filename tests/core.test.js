@@ -714,6 +714,40 @@ test("Edge admin publish route completes trusted publish and authorized download
     ).status,
     404,
   );
+  const deleteBeforeArchive = await handleRequest(
+    new Request("https://example.com/admin/v1/templates/tpl_publish_edge", {
+      method: "DELETE",
+      headers: admin,
+    }),
+    publishEnv,
+    kv,
+  );
+  assert.equal(deleteBeforeArchive.status, 409);
+  const archived = await handleRequest(
+    new Request("https://example.com/admin/v1/templates/tpl_publish_edge/archive", {
+      method: "POST",
+      headers: admin,
+      body: "{}",
+    }),
+    publishEnv,
+    kv,
+  );
+  assert.equal(archived.status, 200);
+  const deleted = await handleRequest(
+    new Request("https://example.com/admin/v1/templates/tpl_publish_edge", {
+      method: "DELETE",
+      headers: admin,
+    }),
+    publishEnv,
+    kv,
+  );
+  assert.equal(deleted.status, 200);
+  const templatesAfterDelete = await handleRequest(
+    new Request("https://example.com/admin/v1/templates", { headers: admin }),
+    publishEnv,
+    kv,
+  );
+  assert.equal((await templatesAfterDelete.json()).items.some((item) => item.templateId === "tpl_publish_edge"), false);
 });
 
 test("EdgeOne Blob real handler conditionally commits registration and strong-reads retry", async (t) => {

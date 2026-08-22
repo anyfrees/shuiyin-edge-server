@@ -472,7 +472,7 @@ var handle = async ({
       return subject;
     };
     if (path === "/admin/v1/templates" && request.method === "GET")
-      return json({ ok: true, items: await service.repository.listTemplates() });
+      return json({ ok: true, items: (await service.repository.listTemplates()).filter((item) => item && !item.deletedAt) });
     if (path === "/admin/v1/templates/atomic-publish" && request.method === "POST") {
       if (!publishService)
         throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
@@ -486,13 +486,18 @@ var handle = async ({
         if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(meta.visibility) && (!meta.offlinePolicy?.allowed || Number(meta.offlinePolicy?.leaseHours) <= 0))
           meta.offlinePolicy = { allowed: true, leaseHours: 24 };
         const draft = body.version || {};
+        let stage = "CREATE_TEMPLATE";
         try {
           await service.createTemplate(meta, actor);
+          stage = "CREATE_VERSION";
           await service.createVersion(meta.templateId, draft, actor);
+          stage = "BUILD_SIGN_VERIFY_UPLOAD";
           const result = await publishService.publish({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), actorId: actor, requestId });
+          stage = "ACTIVATE_TEMPLATE";
           await service.updateTemplate(meta.templateId, { enabled: body.template?.enabled !== false, lifecycleStatus: "ACTIVE" }, actor);
           return result;
         } catch (error) {
+          error.stage || (error.stage = stage);
           const existing = await service.repository.getTemplate(meta.templateId).catch(() => null);
           if (existing && Number(existing.publishedAt || 0) <= 0)
             await service.updateTemplate(meta.templateId, { enabled: false, lifecycleStatus: "FAILED", deletedAt: Date.now() }, actor).catch(() => {
@@ -524,6 +529,23 @@ var handle = async ({
         ok: true,
         template: await service.updateTemplate(m[1], body, actor)
       });
+    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/archive$/);
+    if (m && request.method === "POST")
+      return json({
+        ok: true,
+        template: await service.updateTemplate(m[1], { enabled: false, lifecycleStatus: "ARCHIVED", archivedAt: Date.now() }, actor)
+      });
+    m = path.match(/^\/admin\/v1\/templates\/([^/]+)$/);
+    if (m && request.method === "DELETE") {
+      const template = await service.repository.getTemplate(m[1]);
+      if (!template) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
+      if (Number(template.publishedAt || 0) > 0 && !template.archivedAt)
+        throw new EntitlementError("TEMPLATE_ARCHIVE_REQUIRED", 409);
+      return json({
+        ok: true,
+        template: await service.updateTemplate(m[1], { enabled: false, lifecycleStatus: "ARCHIVED", deletedAt: Date.now(), deletedBy: actor }, actor)
+      });
+    }
     m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions$/);
     if (m && request.method === "POST")
       return json(
@@ -638,10 +660,10 @@ var handle = async ({
     return json({ ok: false, code: "NOT_FOUND" }, 404);
   } catch (error) {
     const e = error instanceof EntitlementError ? error : new EntitlementError(
-      error?.code || "UNAUTHENTICATED",
-      error?.status || 401
+      error?.code || "ADMIN_INTERNAL_ERROR",
+      error?.status || 500
     );
-    return json({ ok: false, code: e.code }, e.status);
+    return json({ ok: false, code: e.code, ...error?.stage ? { stage: error.stage } : {}, ...error?.field ? { field: error.field } : {} }, e.status);
   }
 };
 
