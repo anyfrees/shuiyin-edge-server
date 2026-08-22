@@ -18,6 +18,8 @@
     "wrangler": "^4.123.0"
   },
   "dependencies": {
-    "@edgeone/pages-blob": "^0.0.16"
+    "@edgeone/pages-blob": "^0.0.16",
+    "@simplewebauthn/server": "^13.3.2",
+    "hash-wasm": "^4.12.0"
   }
 }

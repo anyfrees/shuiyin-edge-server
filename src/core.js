@@ -3,6 +3,7 @@ import { EdgeOneTemplateRepository, TemplateEntitlementService, createTemplateHt
 import { TemplateRuntimeService, TemplatePublishService, createTemplateRuntimeHttpHandler, CloudflareR2TemplateStorage, EdgeOneBlobTemplateStorage } from './template-package-core.generated.js'
 import { CaptureTicketRuntimeService, ProvenanceRegistrationServiceV2, ProvenanceVerificationServiceV2, ProvenanceVerificationExchangeServiceV3, createProvenanceVerificationExchangeHttpHandler, createEdgeCaptureTicketHandler, createEdgeProvenanceRegistrationHandler, createEsaProvenanceRegistrationHandler, createEdgeProvenanceVerificationHandler, createEsaProvenanceVerificationHandler } from './provenance-core.generated.js'
 import { D1ProvenanceCommitRepository, EdgeOneBlobProvenanceCommitRepository } from './provenance-repositories.js'
+import { createEdgeAdminHandler } from './admin-security-edge.js'
 
 // Some EdgeOne Edge Function isolates expose the Fetch API without the newer
 // Response.json() convenience method. Keep all generated handlers portable.
@@ -34,6 +35,7 @@ const LOCATION_RATE_LIMIT = 30
 const locationRateClients = new Map()
 const authRateClients = new Map()
 const templateHandlers = new WeakMap()
+const adminHandlers = new WeakMap()
 const captureHandlers = new WeakMap()
 const registrationHandlers = new WeakMap()
 const verificationHandlers = new WeakMap()
@@ -70,7 +72,7 @@ const corsHeaders = (request, env) => {
   const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
   const origin = request.headers.get('origin')
   const allowed = env.ALLOWED_ORIGIN || 'https://shuiyin.nnu.cn'
-  if (origin === allowed) Object.assign(headers, { 'Access-Control-Allow-Origin': allowed, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '86400', Vary: 'Origin' })
+  if (origin === allowed) Object.assign(headers, { 'Access-Control-Allow-Origin': allowed, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-CSRF-Token, X-Request-Id', 'Access-Control-Max-Age': '86400', Vary: 'Origin' })
   return headers
 }
 const parseJson = value => { try { return value ? JSON.parse(value) : null } catch { return null } }
@@ -263,6 +265,11 @@ export async function handleRequest(request, env, kv) {
     let handlers=templateHandlers.get(env)
     if(!handlers){const parseKeys=value=>{try{return JSON.parse(value||'[]')}catch{return[]}},storage=env.TEMPLATE_OBJECTS?new CloudflareR2TemplateStorage(env.TEMPLATE_OBJECTS):env.TEMPLATE_BLOB?new EdgeOneBlobTemplateStorage(env.TEMPLATE_BLOB):null,authenticate=async req=>(await identities.authenticate(bearer(req))).subject,authenticateCatalog=async req=>bearer(req)?authenticate(req):{subjectId:'anonymous',status:'active',anonymous:true,internal:false},packageKeys=parseKeys(env.JILU_TEMPLATE_PACKAGE_KEYS),publishService=new TemplatePublishService({repository,storage,packageKeys}),identityRepository=new EdgeOneIdentityRepository(kv);handlers={entitlement:createTemplateHttpHandler({service,publishService,adminToken:env.ADMIN_TOKEN,authenticate:authenticateCatalog,resolveBindingCode:(code,operation)=>identities.withBindingCode(code,operation),resolveSubjectById:id=>identityRepository.getSubject(id),resolveSubjectByPublicId:publicId=>identityRepository.getSubjectByPublicId(publicId)}),runtime:createTemplateRuntimeHttpHandler({service:new TemplateRuntimeService({entitlementService:service,repository,storage,downloadTokenKey:env.JILU_TEMPLATE_DOWNLOAD_TOKEN_KEY,packageKeys,leaseKeys:parseKeys(env.JILU_TEMPLATE_LEASE_KEYS)}),authenticate})};templateHandlers.set(env,handlers)}
     const runtime=/^\/v1\/templates\/(download-token|package\/|preview\/|lease(?:\/renew)?$)/.test(url.pathname)
+    if (url.pathname.startsWith('/admin/v1/console')) {
+      let admin = adminHandlers.get(env)
+      if (!admin) { admin = createEdgeAdminHandler({ kv, env, forward: handlers.entitlement }); adminHandlers.set(env, admin) }
+      return admin(request)
+    }
     return (runtime?handlers.runtime:handlers.entitlement)(request)
   }
   if(url.pathname==='/v2/public-keys'){
