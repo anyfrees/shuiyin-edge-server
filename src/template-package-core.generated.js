@@ -1068,7 +1068,8 @@ var TemplatePublishService = class {
     operationId = () => `pop_${crypto.randomUUID().replace(/-/g, "")}`,
     builder = buildTemplateBundle,
     validator = validateTemplateBundle,
-    revalidateBuilt = true
+    revalidateBuilt = true,
+    verifyUploadedPackage = true
   }) {
     Object.assign(this, {
       repository,
@@ -1078,7 +1079,8 @@ var TemplatePublishService = class {
       operationId,
       builder,
       validator,
-      revalidateBuilt
+      revalidateBuilt,
+      verifyUploadedPackage
     });
   }
   activeKey() {
@@ -1184,14 +1186,11 @@ var TemplatePublishService = class {
         contentDigest: built.contentDigest,
         objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`
       });
-      const remote = await this.storage.getPackage(
-        templateId,
-        Number(templateVersion)
-      ), metadata = await this.storage.getMetadata(
+      const remote = this.verifyUploadedPackage ? await this.storage.getPackage(templateId, Number(templateVersion)) : null, metadata = await this.storage.getMetadata(
         templateId,
         Number(templateVersion)
       );
-      if (!remote || Number(metadata?.size ?? remote.byteLength) !== built.bytes.byteLength || !await this.validateRemote(
+      if (this.verifyUploadedPackage && !remote || Number(metadata?.size ?? remote?.byteLength) !== built.bytes.byteLength || this.verifyUploadedPackage && !await this.validateRemote(
         remote,
         built,
         templateId,

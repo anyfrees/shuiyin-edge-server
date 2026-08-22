@@ -783,6 +783,7 @@ export async function handleRequest(request, env, kv) {
         storage,
         packageKeys,
         revalidateBuilt: false,
+        verifyUploadedPackage: false,
       }),
         identityRepository = new EdgeOneIdentityRepository(kv),
         adminToken = env.ADMIN_TOKEN || `internal-${crypto.randomUUID()}`;
