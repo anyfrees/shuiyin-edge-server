@@ -53,16 +53,17 @@ test('Makers catch-all preserves API CORS preflight', async () => {
 })
 
 test('Makers KV adapter uses the documented delete signature and normalizes list keys', async () => {
-  let deleteArguments = 0
+  let deleteArguments = 0, tombstone = null
   const kv = makersKv({
     async get() { return null },
-    async put() {},
-    async delete(...args) { deleteArguments = args.length },
+    async put(key, value) { tombstone = { key, value } },
+    async delete(...args) { deleteArguments = args.length; throw new Error('runtime delete incompatibility') },
     async list() { return { complete: true, cursor: null, keys: [{ key: 'admin:challenge:test' }] } },
   })
   await kv.delete('admin:challenge:test')
   const page = await kv.list({ prefix: 'admin:' })
   assert.equal(deleteArguments, 1)
+  assert.deepEqual(tombstone, { key: 'admin:challenge:test', value: '' })
   assert.equal(page.keys[0].name, 'admin:challenge:test')
   assert.equal(page.list_complete, true)
 })
