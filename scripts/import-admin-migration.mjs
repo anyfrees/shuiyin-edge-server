@@ -9,7 +9,6 @@ if (!endpoint || !file || !token) {
 }
 const raw = await readFile(file, 'utf8')
 const signature = createHmac('sha256', token).update(raw).digest('base64url')
-const response = await fetch(`${endpoint.replace(/\/$/, '')}/admin/v1/console/migration/import`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-migration-signature': signature }, body: raw })
-const result = await response.json().catch(() => ({ ok: false, code: `HTTP_${response.status}` }))
-if (!response.ok) { console.error(JSON.stringify({ status: response.status, code: result.code })); process.exit(1) }
+let offset=0,result,response
+do { response=await fetch(`${endpoint.replace(/\/$/, '')}/admin/v1/console/migration/import`,{method:'POST',headers:{'content-type':'application/json','x-migration-signature':signature,'x-migration-audit-offset':String(offset)},body:raw});result=await response.json().catch(()=>({ok:false,code:`HTTP_${response.status}`}));if(!response.ok){console.error(JSON.stringify({status:response.status,code:result.code}));process.exit(1)}offset=Number(result.nextAuditOffset)||0 } while(result.partial)
 console.log(JSON.stringify({ status: response.status, ...result }))

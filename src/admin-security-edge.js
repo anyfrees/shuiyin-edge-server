@@ -158,15 +158,16 @@ export const createEdgeAdminHandler = ({ kv, env, forward }) => async request =>
       const payload = parse(raw); if (!payload || payload.schemaVersion !== 1 || !Array.isArray(payload.principals)) throw fail('MIGRATION_PAYLOAD_INVALID', 400)
       if (await kv.get(key('migration', payload.migrationId))) return json({ ok: true, alreadyImported: true, migrationId: payload.migrationId })
       if (await kv.get(key('migration', 'active')) && request.headers.get('x-migration-replace') !== 'confirmed') throw fail('MIGRATION_ALREADY_COMPLETED', 409)
-      const counts = { principals: 0, passkeys: 0, recoveryCodes: 0, audits: 0 }
-      for (const source of payload.principals) {
+      const auditOffset=Math.max(0,Number(request.headers.get('x-migration-audit-offset')||0)),auditBatch=(payload.audits||[]).slice(auditOffset,auditOffset+25),includePrincipals=auditOffset===0,counts = { principals: 0, passkeys: 0, recoveryCodes: 0, audits: auditOffset }
+      for (const source of includePrincipals?payload.principals:[]) {
         const admin = { adminId: source.adminId, username: clean(source.username, 80).toLowerCase(), displayName: clean(source.displayName || source.username, 80), status: source.status, authzEpoch: Number(source.authzEpoch) || 1, totpSecret: source.totpSecret || null, totpEnabled: Boolean(source.totpEnabled), passwordHash: source.passwordHash || null, roles: [...new Set(source.roles || [])].filter(x => ADMIN_ROLES[x]), templateScopes: [...new Set(source.templateScopes || [])], groupScopes: [...new Set(source.groupScopes || [])], passkeyIds: (source.passkeys || []).map(x => x.credentialId), createdAt: Number(source.createdAt) || Date.now(), updatedAt: Number(source.updatedAt) || Date.now() }
         if (!admin.adminId || !/^[a-z0-9._-]{3,80}$/.test(admin.username)) throw fail('MIGRATION_PAYLOAD_INVALID', 400)
         await Promise.all([put(kv, 'principal', admin.adminId, admin), kv.put(key('username', admin.username), admin.adminId)]); counts.principals++
         for (const passkey of source.passkeys || []) { await put(kv, 'passkey', passkey.credentialId, { ...passkey, adminId: admin.adminId }); counts.passkeys++ }
         for (const recovery of source.recoveryCodes || []) { await put(kv, 'recovery', recovery.codeHash, { ...recovery, adminId: admin.adminId }); counts.recoveryCodes++ }
       }
-      for (const event of payload.audits || []) { const normalized={event_id:event.eventId,actor_id:event.actorId,action:event.action,resource_type:event.resourceType,resource_id:event.resourceId,result:event.result,timestamp:event.timestamp,metadata:event.metadata||{}};await put(kv, 'audit', `${String(9e15 - Number(event.timestamp)).padStart(16, '0')}:${event.eventId}`, normalized); counts.audits++ }
+      for (const event of auditBatch) { const normalized={event_id:event.eventId,actor_id:event.actorId,action:event.action,resource_type:event.resourceType,resource_id:event.resourceId,result:event.result,timestamp:event.timestamp,metadata:event.metadata||{}};await put(kv, 'audit', `${String(9e15 - Number(event.timestamp)).padStart(16, '0')}:${event.eventId}`, normalized); counts.audits++ }
+      if(counts.audits<(payload.audits||[]).length)return json({ok:true,migrationId:payload.migrationId,partial:true,nextAuditOffset:counts.audits,counts},202)
       const completed = { migrationId: payload.migrationId, sourceDigest: await digest(raw), completedAt: Date.now(), counts }
       await Promise.all([put(kv, 'migration', payload.migrationId, completed), put(kv, 'migration', 'active', completed)])
       return json({ ok: true, ...completed }, 201)
