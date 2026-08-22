@@ -1067,7 +1067,8 @@ var TemplatePublishService = class {
     now = () => Date.now(),
     operationId = () => `pop_${crypto.randomUUID().replace(/-/g, "")}`,
     builder = buildTemplateBundle,
-    validator = validateTemplateBundle
+    validator = validateTemplateBundle,
+    revalidateBuilt = true
   }) {
     Object.assign(this, {
       repository,
@@ -1076,7 +1077,8 @@ var TemplatePublishService = class {
       now,
       operationId,
       builder,
-      validator
+      validator,
+      revalidateBuilt
     });
   }
   activeKey() {
@@ -1133,13 +1135,14 @@ var TemplatePublishService = class {
         privateKey: key2.privateKey,
         algorithm: key2.algorithm || "Ed25519"
       });
-      await this.validator({
-        bytes: built.bytes,
-        expectedTemplateId: templateId,
-        expectedVersion: Number(templateVersion),
-        rendererVersion: 2,
-        keys: this.packageKeys
-      });
+      if (this.revalidateBuilt)
+        await this.validator({
+          bytes: built.bytes,
+          expectedTemplateId: templateId,
+          expectedVersion: Number(templateVersion),
+          rendererVersion: 2,
+          keys: this.packageKeys
+        });
       const existing = await this.storage.getPackage(
         templateId,
         Number(templateVersion)
@@ -1274,6 +1277,11 @@ var TemplatePublishService = class {
     try {
       const data = remote instanceof Uint8Array ? remote : new Uint8Array(remote);
       if (data.byteLength !== built.bytes.byteLength) return false;
+      if (!this.revalidateBuilt) {
+        for (let index = 0; index < data.byteLength; index += 1)
+          if (data[index] !== built.bytes[index]) return false;
+        return true;
+      }
       const checked = await this.validator({
         bytes: data,
         expectedTemplateId: id,
