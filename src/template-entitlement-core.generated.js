@@ -32,7 +32,7 @@ var KvTemplateEntitlementRepository = class {
   }
   async saveVersion(x) {
     const k = `te_ver_${x.templateId}_${x.templateVersion}`, old = await this.read(k);
-    if (old) throw new EntitlementError("TEMPLATE_VERSION_CONFLICT", 409);
+    if (old && !(old.status === "FAILED" && old.deletedAt)) throw new EntitlementError("TEMPLATE_VERSION_CONFLICT", 409);
     return this.write(k, x);
   }
   async getVersion(id, v) {
@@ -243,6 +243,11 @@ var SqlTemplateEntitlementRepository = class {
     return (await this.all("SELECT payload FROM templates")).map((x) => parse(x.payload));
   }
   async saveVersion(x) {
+    const old = await this.getVersion(x.templateId, x.templateVersion);
+    if (old?.status === "FAILED" && old.deletedAt) {
+      await this.stmt("UPDATE template_versions SET status=?,payload=? WHERE template_id=? AND template_version=?", [x.status, JSON.stringify(x), x.templateId, x.templateVersion]).run();
+      return x;
+    }
     try {
       await this.stmt("INSERT INTO template_versions VALUES(?,?,?,?)", [x.templateId, x.templateVersion, x.status, JSON.stringify(x)]).run();
       return x;
@@ -498,6 +503,10 @@ var handle = async ({
           return result;
         } catch (error) {
           error.stage || (error.stage = stage);
+          const failedVersion = await service.repository.getVersion(meta.templateId, Number(draft.templateVersion)).catch(() => null);
+          if (failedVersion && failedVersion.status !== "PUBLISHED")
+            await service.repository.updateVersion({ ...failedVersion, status: "FAILED", deletedAt: Date.now() }).catch(() => {
+            });
           const existing = await service.repository.getTemplate(meta.templateId).catch(() => null);
           if (existing && Number(existing.publishedAt || 0) <= 0)
             await service.updateTemplate(meta.templateId, { enabled: false, lifecycleStatus: "FAILED", deletedAt: Date.now() }, actor).catch(() => {
@@ -762,7 +771,7 @@ var MemoryTemplateEntitlementRepository = class {
   async saveVersion(x) {
     const k = `${x.templateId}|${x.templateVersion}`, old = this.versions.get(k);
     if (old?.status === "PUBLISHED" && JSON.stringify(old) !== JSON.stringify(x)) throw new EntitlementError("TEMPLATE_VERSION_CONFLICT", 409);
-    if (old) throw new EntitlementError("TEMPLATE_VERSION_CONFLICT", 409);
+    if (old && !(old.status === "FAILED" && old.deletedAt)) throw new EntitlementError("TEMPLATE_VERSION_CONFLICT", 409);
     this.versions.set(k, structuredClone(x));
     return x;
   }
