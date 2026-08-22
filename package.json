@@ -15,5 +15,8 @@
     "@cloudflare/workers-types": "^5.20260814.1",
     "typescript": "^5.9.2",
     "wrangler": "^4.123.0"
+  },
+  "dependencies": {
+    "@edgeone/pages-blob": "^0.0.16"
   }
 }

@@ -39,7 +39,7 @@ TENCENT_MAP_SECRET=
 ## EdgeOne Makers
 
 1. 在 EdgeOne Makers 中导入本仓库；`edgeone.json` 已声明构建命令和 `dist` 输出目录。
-2. 创建并绑定 `PROVENANCE_KV`、`PROVENANCE_BLOB` 和 `TEMPLATE_BLOB`。
+2. 创建并绑定 `PROVENANCE_KV`；两个 Blob 命名空间由官方 `@edgeone/pages-blob` SDK 在首次请求时自动创建。
 3. 按 [DEPLOY_EDGEONE.md](DEPLOY_EDGEONE.md) 配置身份、验真、模板签名、腾讯位置服务和 CORS 环境变量。
 4. 触发部署。之后连接的 GitHub 分支每次推送都会自动构建。
 

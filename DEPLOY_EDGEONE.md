@@ -72,7 +72,7 @@
 
 ## 4. 创建并绑定存储资源
 
-服务需要一个 KV 和两个相互独立的 Blob 存储。绑定名称必须完全一致，包括大小写。
+服务需要一个 KV 和两个相互独立的 Blob 命名空间。KV 在控制台绑定；Blob 使用腾讯云官方 `@edgeone/pages-blob` SDK，首次调用 `getStore()` 时自动创建，无需在控制台手工绑定。
 
 ### 4.1 `PROVENANCE_KV`
 
@@ -86,16 +86,16 @@
 PROVENANCE_KV
 ```
 
-### 4.2 `PROVENANCE_BLOB`
+### 4.2 权威验真 Blob
 
-类型：EdgeOne Blob。
+类型：EdgeOne Makers Blob，默认命名空间为 `jilu-provenance`。
 
 用途：保存照片注册的权威记录、消费票据状态和验真索引。
 
-绑定变量名：
+如需自定义命名空间名称，可设置：
 
 ```text
-PROVENANCE_BLOB
+PROVENANCE_BLOB_STORE=jilu-provenance
 ```
 
 该存储必须支持仅在对象不存在时写入（`onlyIfNew`）以及冲突后的强一致读取。不能只配置 KV 代替它，否则注册接口会返回：
@@ -104,19 +104,19 @@ PROVENANCE_BLOB
 503 AUTHORITATIVE_PROVENANCE_STORAGE_NOT_CONFIGURED
 ```
 
-### 4.3 `TEMPLATE_BLOB`
+### 4.3 模板 Blob
 
-类型：另一个独立的 EdgeOne Blob。
+类型：另一个独立的 EdgeOne Makers Blob，默认命名空间为 `jilu-templates`。
 
 用途：保存模板安装包、模板背景资源和预览图片。
 
-绑定变量名：
+如需自定义命名空间名称，可设置：
 
 ```text
-TEMPLATE_BLOB
+TEMPLATE_BLOB_STORE=jilu-templates
 ```
 
-建议不要和 `PROVENANCE_BLOB` 混用，分开存储便于权限隔离、容量统计和故障排查。
+两个命名空间应保持分离，便于权限隔离、容量统计和故障排查。部署后首次触发相关 API，命名空间才会显示在控制台 Blob 页面。
 
 ## 5. 配置环境变量和 Secret
 
@@ -153,6 +153,8 @@ TEMPLATE_BLOB
 | 变量 | 推荐值 | 说明 |
 | --- | --- | --- |
 | `PROVENANCE_VERIFY_RATE_LIMIT` | `60` | 单个限流维度每分钟允许的验真请求数 |
+| `PROVENANCE_BLOB_STORE` | `jilu-provenance` | 权威验真 Blob 命名空间，可不设置 |
+| `TEMPLATE_BLOB_STORE` | `jilu-templates` | 模板 Blob 命名空间，可不设置 |
 | `ADMIN_TOKEN` | 随机高强度值 | 旧管理兼容接口使用；生产管理流程需要时配置 |
 | `ENVIRONMENT` | `production` | 运行环境标识和诊断信息 |
 
@@ -190,8 +192,8 @@ TEMPLATE_BLOB
 [ ] 部署分支为 main
 [ ] 构建输出目录为 dist
 [ ] PROVENANCE_KV 已绑定
-[ ] PROVENANCE_BLOB 已绑定
-[ ] TEMPLATE_BLOB 已绑定
+[ ] 首次验真请求后 jilu-provenance Blob 自动创建
+[ ] 首次模板存储请求后 jilu-templates Blob 自动创建
 [ ] WECHAT_APP_ID 与当前小程序一致
 [ ] WECHAT_APP_SECRET 已作为 Secret 保存
 [ ] 身份 HMAC 与 Subject 派生密钥已分别配置
@@ -341,15 +343,15 @@ curl -i -X POST https://YOUR_DOMAIN/v3/provenance/verify/prepare \
 
 ### 12.4 返回 `AUTHORITATIVE_PROVENANCE_STORAGE_NOT_CONFIGURED`
 
-`PROVENANCE_BLOB` 未绑定、绑定名拼写错误，或当前环境没有继承该绑定。不能用 `PROVENANCE_KV` 代替。
+检查 Makers Functions 是否成功加载 `@edgeone/pages-blob`，以及 `jilu-provenance` 命名空间是否在首次请求后自动出现。不能用 `PROVENANCE_KV` 代替权威 Blob。
 
 ### 12.5 返回 `PROVENANCE_STORAGE_NOT_CONFIGURED`
 
-V2/V3 验真找不到权威注册存储。检查 `PROVENANCE_BLOB`，并确认注册和验真实例使用同一个生产存储。
+V2/V3 验真找不到权威注册存储。确认部署版本已包含 Makers Blob SDK 适配，并且注册和验真使用同一个 `PROVENANCE_BLOB_STORE` 名称。
 
 ### 12.6 模板目录能打开，但预览或安装失败
 
-检查 `TEMPLATE_BLOB`、模板包与预览对象、模板包签名密钥、下载令牌密钥、微信下载合法域名，以及模板元数据版本与对象路径。
+检查 `jilu-templates` 命名空间、模板包与预览对象、模板包签名密钥、下载令牌密钥、微信下载合法域名，以及模板元数据版本与对象路径。
 
 ### 12.7 小程序显示“离线模式”或连接很慢
 
@@ -393,7 +395,7 @@ V2/V3 验真找不到权威注册存储。检查 `PROVENANCE_BLOB`，并确认�
 - 不记录 AppSecret、私钥、Session Token、完整下载令牌或腾讯地图 Secret。
 - 定期检查请求错误率、Blob 容量、KV 使用量和接口延迟。
 - 分别统计 401、403、409、429、503，不要只看总 5xx。
-- 不要手工删除 `PROVENANCE_BLOB` 中的权威记录和票据消费对象。
+- 不要手工删除 `jilu-provenance` 中的权威记录和票据消费对象。
 
 ## 16. 完成标准
 
@@ -402,7 +404,7 @@ BUILD: PASS
 HEALTH: 200 / serviceVersion 1.1.0
 ROUTING: V2/V3/TEMPLATE/ADMIN 无平台 404
 AUTH: 微信登录成功
-STORAGE: KV + PROVENANCE_BLOB + TEMPLATE_BLOB 均已绑定
+STORAGE: KV 已绑定，两个 Makers Blob 命名空间已自动创建
 PROVENANCE: 注册及 V3 验真成功
 TEMPLATE: 目录、预览、下载、安装、离线租约成功
 LOCATION: 腾讯逆地址解析成功
