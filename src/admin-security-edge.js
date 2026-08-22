@@ -147,7 +147,7 @@ export class EdgeAdminSecurityService {
       try{await this.audit(admin.adminId, 'ADMIN_LOGIN_SUCCESS', '', '', 'SUCCESS', { method: 'PASSKEY' })}catch{}
       return session
     } catch(error) {
-      if(error?.status)throw error
+      if(error && typeof error === 'object' && 'status' in error)throw error
       throw fail(`PASSKEY_RUNTIME_${stage}`,500)
     }
   }
