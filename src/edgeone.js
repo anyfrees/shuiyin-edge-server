@@ -2,6 +2,12 @@ import { handleRequest } from './core.js'
 import { getStore } from '@edgeone/pages-blob'
 
 const runtimeBinding = (env, bindings, name) => env?.[name] || bindings?.[name]
+const makersKv = binding => binding && ({
+  get: (key, options = {}) => binding.get(key, options),
+  put: (key, value, options = {}) => binding.put(key, value, options),
+  delete: (key, options = {}) => binding.delete(key, options),
+  list: (options = {}) => binding.list(options),
+})
 
 const asArrayBuffer = value => {
   if (!(value instanceof Uint8Array)) return value
@@ -35,6 +41,6 @@ export const edgeOneEnvironment = (env = {}, bindings = globalThis) => {
 export const handleEdgeOneRequest = ({ request, env = {} }) => {
   const bindings = /** @type {any} */ (globalThis)
   const runtimeEnv = edgeOneEnvironment(env, bindings)
-  const kv = runtimeBinding(env, bindings, 'PROVENANCE_KV')
+  const kv = makersKv(runtimeBinding(env, bindings, 'PROVENANCE_KV'))
   return handleRequest(request, runtimeEnv, kv)
 }
