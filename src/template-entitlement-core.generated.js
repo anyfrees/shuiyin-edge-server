@@ -465,7 +465,7 @@ var handle = async ({
     )?.[1];
     if (!await equal(supplied, adminToken))
       throw new EntitlementError("ADMIN_UNAUTHORIZED", 401);
-    const actor = "admin";
+    const actor = String(request.headers.get("x-jilu-admin-actor") || "admin").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 120) || "admin";
     const byPublicId = async (publicId) => {
       const subject = await resolveSubjectByPublicId?.(String(publicId || "").toUpperCase());
       if (!subject) throw new EntitlementError("SUBJECT_NOT_FOUND", 404);
