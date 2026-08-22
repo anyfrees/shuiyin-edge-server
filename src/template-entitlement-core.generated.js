@@ -486,13 +486,6 @@ var handle = async ({
         if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(meta.visibility) && (!meta.offlinePolicy?.allowed || Number(meta.offlinePolicy?.leaseHours) <= 0))
           meta.offlinePolicy = { allowed: true, leaseHours: 24 };
         const draft = body.version || {};
-        const key = publishService.activeKey();
-        const assetBytes = (draft.assets || []).map((asset) => ({
-          ...asset,
-          bytes: asset.bytes instanceof Uint8Array ? asset.bytes : Uint8Array.from(atob(String(asset.bytes || asset.data || "").replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - String(asset.bytes || asset.data || "").length % 4) % 4)), (c) => c.charCodeAt(0))
-        }));
-        const preflight = await publishService.builder({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), name: meta.name, description: meta.description, layout: draft.layout, assets: assetBytes, createdAt: 0, keyId: key.keyId, privateKey: key.privateKey });
-        await publishService.validator({ bytes: preflight.bytes, expectedTemplateId: meta.templateId, expectedVersion: Number(draft.templateVersion), rendererVersion: 2, keys: publishService.packageKeys });
         try {
           await service.createTemplate(meta, actor);
           await service.createVersion(meta.templateId, draft, actor);
