@@ -150,11 +150,13 @@ const routePermission = (path, method) => {
 
 export const createEdgeAdminHandler = ({ kv, env, forward }) => async request => {
   const service = new EdgeAdminSecurityService({ kv, env }), url = new URL(request.url), path = url.pathname.replace(/^\/admin\/v1\/console/, ''), method = request.method
+  let migrationAuthorized=false
   try {
     if (path === '/migration/import' && method === 'POST') {
       if (!env.ADMIN_MIGRATION_TOKEN) throw fail('MIGRATION_DISABLED', 404)
       const raw = await request.text(), supplied = request.headers.get('x-migration-signature') || '', expected = await hmac(env.ADMIN_MIGRATION_TOKEN, raw)
       if (!timingSafe(supplied, expected)) throw fail('MIGRATION_SIGNATURE_INVALID', 403)
+      migrationAuthorized=true
       const payload = parse(raw); if (!payload || payload.schemaVersion !== 1 || !Array.isArray(payload.principals)) throw fail('MIGRATION_PAYLOAD_INVALID', 400)
       if (await kv.get(key('migration', payload.migrationId))) return json({ ok: true, alreadyImported: true, migrationId: payload.migrationId })
       if (await kv.get(key('migration', 'active')) && request.headers.get('x-migration-replace') !== 'confirmed') throw fail('MIGRATION_ALREADY_COMPLETED', 409)
@@ -201,5 +203,5 @@ export const createEdgeAdminHandler = ({ kv, env, forward }) => async request =>
     const requirement = routePermission(path, method)
     if (requirement && forward) { await service.require(access, requirement); const headers = new Headers(request.headers); headers.set('authorization', `Bearer ${env.ADMIN_TOKEN}`); return forward(new Request(request, { headers })) }
     return json({ ok: false, code: 'NOT_FOUND' }, 404)
-  } catch (error) { const problem = /** @type {any} */ (error); return json({ ok: false, code: problem.code || 'ADMIN_OPERATION_FAILED' }, problem.status || 500) }
+  } catch (error) { const problem = /** @type {any} */ (error); return json({ ok: false, code: problem.code || 'ADMIN_OPERATION_FAILED', ...(migrationAuthorized?{diagnostic:clean(problem.message||problem.name,160)}:{}) }, problem.status || 500) }
 }
