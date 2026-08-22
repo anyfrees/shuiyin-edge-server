@@ -699,86 +699,265 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
 // packages/template-package-core/src/runtime.js
 var fail = (code, status = 400) => Object.assign(new Error(code), { code, status });
 var safeId = (id) => /^tpl_[a-z0-9_-]{3,80}$/.test(String(id || ""));
-var noStore = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Vary": "Authorization" };
-var restricted = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Vary": "Authorization" };
+var noStore = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  Vary: "Authorization"
+};
+var restricted = {
+  "Cache-Control": "private, no-store",
+  "X-Content-Type-Options": "nosniff",
+  Vary: "Authorization"
+};
 var json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { ...noStore, ...headers } });
 var unavailable = () => fail("TEMPLATE_NOT_AVAILABLE", 404);
 var asBytes = (value) => value instanceof Uint8Array ? value : new Uint8Array(value);
 var packagePreview = (raw) => {
   try {
-    const bundle = JSON.parse(new TextDecoder().decode(asBytes(raw))), asset = (bundle.manifest?.assets || []).find((x) => String(x.mimeType || "").startsWith("image/") && bundle.files?.[x.path]);
-    return asset ? { bytes: Uint8Array.from(atob(bundle.files[asset.path].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - bundle.files[asset.path].length % 4) % 4)), (c) => c.charCodeAt(0)), contentType: asset.mimeType } : null;
+    const bundle = JSON.parse(new TextDecoder().decode(asBytes(raw))), asset = (bundle.manifest?.assets || []).find(
+      (x) => String(x.mimeType || "").startsWith("image/") && bundle.files?.[x.path]
+    );
+    return asset ? {
+      bytes: Uint8Array.from(
+        atob(
+          bundle.files[asset.path].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - bundle.files[asset.path].length % 4) % 4)
+        ),
+        (c) => c.charCodeAt(0)
+      ),
+      contentType: asset.mimeType
+    } : null;
   } catch {
     return null;
   }
 };
-var TEMPLATE_RUNTIME_DEFAULTS = Object.freeze({ downloadTokenTtlMs: 18e4, maxLeaseHours: 168, publicKeysMaxAge: 300 });
+var TEMPLATE_RUNTIME_DEFAULTS = Object.freeze({
+  downloadTokenTtlMs: 18e4,
+  maxLeaseHours: 168,
+  publicKeysMaxAge: 300
+});
 var TemplateRuntimeService = class {
-  constructor({ entitlementService, repository, storage, downloadTokenKey, packageKeys = [], leaseKeys = [], additionalPublicKeys = [], now = () => Date.now(), downloadTokenTtlMs = TEMPLATE_RUNTIME_DEFAULTS.downloadTokenTtlMs, maxLeaseHours = TEMPLATE_RUNTIME_DEFAULTS.maxLeaseHours }) {
-    Object.assign(this, { entitlementService, repository, storage, downloadTokenKey, packageKeys, leaseKeys, additionalPublicKeys, now, downloadTokenTtlMs, maxLeaseHours });
+  constructor({
+    entitlementService,
+    repository,
+    storage,
+    downloadTokenKey,
+    packageKeys = [],
+    leaseKeys = [],
+    additionalPublicKeys = [],
+    now = () => Date.now(),
+    downloadTokenTtlMs = TEMPLATE_RUNTIME_DEFAULTS.downloadTokenTtlMs,
+    maxLeaseHours = TEMPLATE_RUNTIME_DEFAULTS.maxLeaseHours
+  }) {
+    Object.assign(this, {
+      entitlementService,
+      repository,
+      storage,
+      downloadTokenKey,
+      packageKeys,
+      leaseKeys,
+      additionalPublicKeys,
+      now,
+      downloadTokenTtlMs,
+      maxLeaseHours
+    });
   }
   async authorized(subject, templateId, templateVersion) {
-    if (!subject || subject.status !== "active") throw fail("SUBJECT_DISABLED", 403);
+    if (!subject || subject.status !== "active")
+      throw fail("SUBJECT_DISABLED", 403);
     if (!safeId(templateId)) throw unavailable();
-    const ctx = await this.entitlementService.context(subject, templateId), access = evaluateTemplateAccess(ctx), version = await this.repository.getVersion(templateId, Number(templateVersion));
-    if (!access.allowed || !version || version.status !== "PUBLISHED" || version.templateVersion !== Number(templateVersion)) throw unavailable();
-    return { ctx, access, version, epoch: await this.repository.getEpoch(templateId) };
+    const ctx = await this.entitlementService.context(subject, templateId), access = evaluateTemplateAccess(ctx), version = await this.repository.getVersion(
+      templateId,
+      Number(templateVersion)
+    );
+    if (!access.allowed || !version || version.status !== "PUBLISHED" || version.templateVersion !== Number(templateVersion))
+      throw unavailable();
+    return {
+      ctx,
+      access,
+      version,
+      epoch: await this.repository.getEpoch(templateId)
+    };
   }
   async downloadToken(subject, { templateId, templateVersion }) {
-    if (!this.downloadTokenKey) throw fail("TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED", 503);
+    if (!this.downloadTokenKey)
+      throw fail("TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED", 503);
     const x = await this.authorized(subject, templateId, templateVersion), issuedAt = this.now();
-    return { downloadToken: await issueDownloadToken({ subjectId: subject.subjectId, templateId, templateVersion: Number(templateVersion), entitlementEpoch: x.epoch, issuedAt, expiresAt: issuedAt + this.downloadTokenTtlMs }, this.downloadTokenKey), expiresAt: issuedAt + this.downloadTokenTtlMs };
+    return {
+      downloadToken: await issueDownloadToken(
+        {
+          subjectId: subject.subjectId,
+          templateId,
+          templateVersion: Number(templateVersion),
+          entitlementEpoch: x.epoch,
+          issuedAt,
+          expiresAt: issuedAt + this.downloadTokenTtlMs
+        },
+        this.downloadTokenKey
+      ),
+      expiresAt: issuedAt + this.downloadTokenTtlMs
+    };
   }
   async package(subject, templateId, token, { requestId = "", appVersion = "" } = {}) {
     if (!this.storage) throw fail("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-    if (!this.downloadTokenKey) throw fail("TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED", 503);
-    const payload = await verifyDownloadToken(token, this.downloadTokenKey, this.now());
-    if (payload.subjectId !== subject?.subjectId) throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
-    if (payload.templateId !== templateId) throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
-    const x = await this.authorized(subject, templateId, payload.templateVersion);
-    if (x.epoch !== payload.entitlementEpoch) throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
-    const bytes2 = await this.storage.getPackage(templateId, payload.templateVersion);
+    if (!this.downloadTokenKey)
+      throw fail("TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED", 503);
+    const payload = await verifyDownloadToken(
+      token,
+      this.downloadTokenKey,
+      this.now()
+    );
+    if (payload.subjectId !== subject?.subjectId)
+      throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
+    if (payload.templateId !== templateId)
+      throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
+    const x = await this.authorized(
+      subject,
+      templateId,
+      payload.templateVersion
+    );
+    if (x.epoch !== payload.entitlementEpoch)
+      throw fail("TEMPLATE_DOWNLOAD_TOKEN_INVALID", 401);
+    const bytes2 = await this.storage.getPackage(
+      templateId,
+      payload.templateVersion
+    );
     if (!bytes2) throw fail("TEMPLATE_PACKAGE_NOT_AVAILABLE", 404);
-    await this.repository.appendAudit({ eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_PACKAGE_DOWNLOADED", actorId: subject.subjectId, subjectId: subject.subjectId, templateId, templateVersion: payload.templateVersion, timestamp: this.now(), requestId: String(requestId).slice(0, 128), appVersion: String(appVersion).slice(0, 64) });
-    return { bytes: asBytes(bytes2), version: x.version, templateVersion: payload.templateVersion };
+    await this.repository.appendAudit({
+      eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`,
+      eventType: "TEMPLATE_PACKAGE_DOWNLOADED",
+      actorId: subject.subjectId,
+      subjectId: subject.subjectId,
+      templateId,
+      templateVersion: payload.templateVersion,
+      timestamp: this.now(),
+      requestId: String(requestId).slice(0, 128),
+      appVersion: String(appVersion).slice(0, 64)
+    });
+    return {
+      bytes: asBytes(bytes2),
+      version: x.version,
+      templateVersion: payload.templateVersion
+    };
   }
   async preview(subject, templateId, templateVersion) {
     if (!this.storage) throw fail("OBJECT_STORAGE_NOT_CONFIGURED", 503);
     const version = Number(templateVersion) || Number((await this.repository.getTemplate(templateId))?.latestVersion), x = await this.authorized(subject, templateId, version);
     let bytes2 = await this.storage.getPreview?.(templateId, version), contentType = "image/webp";
     if (!bytes2) {
-      const fallback = packagePreview(await this.storage.getPackage(templateId, version));
+      const fallback = packagePreview(
+        await this.storage.getPackage(templateId, version)
+      );
       bytes2 = fallback?.bytes;
       contentType = fallback?.contentType;
     }
     if (!bytes2) throw fail("TEMPLATE_PACKAGE_NOT_AVAILABLE", 404);
-    return { bytes: asBytes(bytes2), contentType, templateVersion: version, version: x.version };
+    return {
+      bytes: asBytes(bytes2),
+      contentType,
+      templateVersion: version,
+      version: x.version
+    };
   }
   activeLeaseKey() {
-    const key2 = this.leaseKeys.find((x) => x.status === "ACTIVE" && x.privateKey);
+    const key2 = this.leaseKeys.find(
+      (x) => x.status === "ACTIVE" && x.privateKey
+    );
     if (!key2) throw fail("TEMPLATE_SIGNATURE_KEY_UNKNOWN", 503);
     return key2;
   }
   async lease(subject, { templateId, templateVersion }) {
     const x = await this.authorized(subject, templateId, templateVersion), policy = x.ctx.template.offlinePolicy || {};
     if (!policy.allowed) throw fail("TEMPLATE_LEASE_NOT_ALLOWED", 403);
-    const key2 = this.activeLeaseKey(), issuedAt = this.now(), hours = Math.min(this.maxLeaseHours, Math.max(0, Number(policy.leaseHours) || 0));
+    const key2 = this.activeLeaseKey(), issuedAt = this.now(), hours = Math.min(
+      this.maxLeaseHours,
+      Math.max(0, Number(policy.leaseHours) || 0)
+    );
     if (!hours) throw fail("TEMPLATE_LEASE_NOT_ALLOWED", 403);
-    return issueLease({ keyId: key2.keyId, privateKey: key2.privateKey, lease: { subjectId: subject.subjectId, templateId, templateVersion: Number(templateVersion), entitlementEpoch: x.epoch, issuedAt, expiresAt: issuedAt + hours * 36e5 } });
+    return issueLease({
+      keyId: key2.keyId,
+      privateKey: key2.privateKey,
+      algorithm: key2.algorithm || "Ed25519",
+      lease: {
+        subjectId: subject.subjectId,
+        templateId,
+        templateVersion: Number(templateVersion),
+        entitlementEpoch: x.epoch,
+        issuedAt,
+        expiresAt: issuedAt + hours * 36e5
+      }
+    });
   }
   async renew(subject, { lease }) {
-    if (!lease || lease.subjectId !== subject?.subjectId) throw fail("TEMPLATE_LEASE_INVALID", 401);
-    const x = await this.authorized(subject, lease.templateId, lease.templateVersion);
-    await verifyLease({ lease, keys: this.leaseKeys, now: this.now(), subjectId: subject.subjectId, templateId: lease.templateId, templateVersion: lease.templateVersion, entitlementEpoch: x.epoch });
-    return this.lease(subject, { templateId: lease.templateId, templateVersion: lease.templateVersion });
+    if (!lease || lease.subjectId !== subject?.subjectId)
+      throw fail("TEMPLATE_LEASE_INVALID", 401);
+    const x = await this.authorized(
+      subject,
+      lease.templateId,
+      lease.templateVersion
+    );
+    await verifyLease({
+      lease,
+      keys: this.leaseKeys,
+      now: this.now(),
+      subjectId: subject.subjectId,
+      templateId: lease.templateId,
+      templateVersion: lease.templateVersion,
+      entitlementEpoch: x.epoch
+    });
+    return this.lease(subject, {
+      templateId: lease.templateId,
+      templateVersion: lease.templateVersion
+    });
   }
   publicKeys() {
-    return [...this.packageKeys.map((x) => ({ ...x, purpose: "template-package-signing" })), ...this.leaseKeys.map((x) => ({ ...x, purpose: "template-entitlement-lease" })), ...this.additionalPublicKeys].filter((x) => ["ACTIVE", "VERIFY_ONLY"].includes(x.status)).map(({ keyId, purpose, algorithm = "Ed25519", status, publicKey }) => ({ keyId, purpose, algorithm, status, publicKey }));
+    return [
+      ...this.packageKeys.map((x) => ({
+        ...x,
+        purpose: "template-package-signing"
+      })),
+      ...this.leaseKeys.map((x) => ({
+        ...x,
+        purpose: "template-entitlement-lease"
+      })),
+      ...this.additionalPublicKeys
+    ].filter((x) => ["ACTIVE", "VERIFY_ONLY"].includes(x.status)).map(({ keyId, purpose, algorithm = "Ed25519", status, publicKey }) => ({
+      keyId,
+      purpose,
+      algorithm,
+      status,
+      publicKey
+    }));
   }
 };
-var statusFor = (code) => ({ TEMPLATE_NOT_AVAILABLE: 404, TEMPLATE_PACKAGE_NOT_AVAILABLE: 404, TEMPLATE_DOWNLOAD_TOKEN_INVALID: 401, TEMPLATE_DOWNLOAD_TOKEN_EXPIRED: 401, TEMPLATE_LEASE_INVALID: 401, TEMPLATE_LEASE_EXPIRED: 401, TEMPLATE_LEASE_NOT_ALLOWED: 403, SUBJECT_DISABLED: 403, OBJECT_STORAGE_NOT_CONFIGURED: 503, TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED: 503, TEMPLATE_SIGNATURE_KEY_UNKNOWN: 503, RATE_LIMITED: 429 })[code] || 400;
-var createTemplateRuntimeHttpHandler = ({ service, authenticate, limits = {}, now = () => Date.now() }) => {
-  const rates = /* @__PURE__ */ new Map(), defaults = { downloadToken: 30, package: 60, preview: 60, leaseIssue: 20, leaseRenew: 20, publicKeys: 240, ...limits };
+var statusFor = (code) => ({
+  TEMPLATE_NOT_AVAILABLE: 404,
+  TEMPLATE_PACKAGE_NOT_AVAILABLE: 404,
+  TEMPLATE_DOWNLOAD_TOKEN_INVALID: 401,
+  TEMPLATE_DOWNLOAD_TOKEN_EXPIRED: 401,
+  TEMPLATE_LEASE_INVALID: 401,
+  TEMPLATE_LEASE_EXPIRED: 401,
+  TEMPLATE_LEASE_NOT_ALLOWED: 403,
+  SUBJECT_DISABLED: 403,
+  OBJECT_STORAGE_NOT_CONFIGURED: 503,
+  TEMPLATE_DOWNLOAD_TOKEN_KEY_NOT_CONFIGURED: 503,
+  TEMPLATE_SIGNATURE_KEY_UNKNOWN: 503,
+  RATE_LIMITED: 429
+})[code] || 400;
+var createTemplateRuntimeHttpHandler = ({
+  service,
+  authenticate,
+  limits = {},
+  now = () => Date.now()
+}) => {
+  const rates = /* @__PURE__ */ new Map(), defaults = {
+    downloadToken: 30,
+    package: 60,
+    preview: 60,
+    leaseIssue: 20,
+    leaseRenew: 20,
+    publicKeys: 240,
+    ...limits
+  };
   return async (request) => {
     const url = new URL(request.url), p = url.pathname, m = request.method;
     let bucket = p === "/v1/templates/download-token" ? "downloadToken" : p.startsWith("/v1/templates/package/") ? "package" : p.startsWith("/v1/templates/preview/") ? "preview" : p === "/v1/templates/lease" ? "leaseIssue" : p === "/v1/templates/lease/renew" ? "leaseRenew" : p === "/v2/public-keys" ? "publicKeys" : null;
@@ -787,23 +966,74 @@ var createTemplateRuntimeHttpHandler = ({ service, authenticate, limits = {}, no
       let subject = null;
       if (bucket !== "publicKeys") subject = await authenticate(request);
       const rateKey = `${bucket}:${subject?.subjectId || request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "anonymous"}`, time = now(), state = rates.get(rateKey), limit = defaults[bucket];
-      if (!state || state.resetAt <= time) rates.set(rateKey, { count: 1, resetAt: time + 6e4 });
-      else if (++state.count > limit) return json({ ok: false, code: "RATE_LIMITED" }, 429, { "Retry-After": String(Math.max(1, Math.ceil((state.resetAt - time) / 1e3))) });
-      if (bucket === "publicKeys" && m === "GET") return json({ keys: service.publicKeys() }, 200, { "Cache-Control": `public, max-age=${TEMPLATE_RUNTIME_DEFAULTS.publicKeysMaxAge}`, "Vary": "Accept-Encoding" });
+      if (!state || state.resetAt <= time)
+        rates.set(rateKey, { count: 1, resetAt: time + 6e4 });
+      else if (++state.count > limit)
+        return json({ ok: false, code: "RATE_LIMITED" }, 429, {
+          "Retry-After": String(
+            Math.max(1, Math.ceil((state.resetAt - time) / 1e3))
+          )
+        });
+      if (bucket === "publicKeys" && m === "GET")
+        return json({ keys: service.publicKeys() }, 200, {
+          "Cache-Control": `public, max-age=${TEMPLATE_RUNTIME_DEFAULTS.publicKeysMaxAge}`,
+          Vary: "Accept-Encoding"
+        });
       const body = ["GET", "HEAD"].includes(m) ? {} : await request.json().catch(() => {
         throw fail("INVALID_JSON");
       });
-      if (bucket === "downloadToken" && m === "POST") return json({ ok: true, ...await service.downloadToken(subject, body) });
+      if (bucket === "downloadToken" && m === "POST")
+        return json({
+          ok: true,
+          ...await service.downloadToken(subject, body)
+        });
       if (bucket === "package" && m === "GET") {
-        const id = decodeURIComponent(p.slice("/v1/templates/package/".length)), x = await service.package(subject, id, request.headers.get("x-jilu-download-token") || url.searchParams.get("token") || "", { requestId: request.headers.get("x-request-id") || "", appVersion: request.headers.get("x-jilu-app-version") || "" }), name = `jilu-template-${id.replace(/[^a-z0-9_-]/g, "_")}-v${x.templateVersion}.jltpkg`;
-        return new Response(x.bytes, { status: 200, headers: { ...restricted, "Content-Type": "application/vnd.jilu.template+json", "Content-Length": String(x.bytes.byteLength), "Content-Disposition": `attachment; filename="${name}"`, "X-JILU-Template-ID": id, "X-JILU-Template-Version": String(x.templateVersion), ...x.version.packageSha256 ? { "ETag": `"sha256-${x.version.packageSha256}"`, "Digest": `sha-256=${x.version.packageSha256}` } : {} } });
+        const id = decodeURIComponent(p.slice("/v1/templates/package/".length)), x = await service.package(
+          subject,
+          id,
+          request.headers.get("x-jilu-download-token") || url.searchParams.get("token") || "",
+          {
+            requestId: request.headers.get("x-request-id") || "",
+            appVersion: request.headers.get("x-jilu-app-version") || ""
+          }
+        ), name = `jilu-template-${id.replace(/[^a-z0-9_-]/g, "_")}-v${x.templateVersion}.jltpkg`;
+        return new Response(x.bytes, {
+          status: 200,
+          headers: {
+            ...restricted,
+            "Content-Type": "application/vnd.jilu.template+json",
+            "Content-Length": String(x.bytes.byteLength),
+            "Content-Disposition": `attachment; filename="${name}"`,
+            "X-JILU-Template-ID": id,
+            "X-JILU-Template-Version": String(x.templateVersion),
+            ...x.version.packageSha256 ? {
+              ETag: `"sha256-${x.version.packageSha256}"`,
+              Digest: `sha-256=${x.version.packageSha256}`
+            } : {}
+          }
+        });
       }
       if (bucket === "preview" && m === "GET") {
-        const id = decodeURIComponent(p.slice("/v1/templates/preview/".length)), x = await service.preview(subject, id, url.searchParams.get("version"));
-        return new Response(x.bytes, { status: 200, headers: { ...restricted, "Content-Type": x.contentType || "image/webp", "Content-Length": String(x.bytes.byteLength), "X-JILU-Template-ID": id, "X-JILU-Template-Version": String(x.templateVersion) } });
+        const id = decodeURIComponent(p.slice("/v1/templates/preview/".length)), x = await service.preview(
+          subject,
+          id,
+          url.searchParams.get("version")
+        );
+        return new Response(x.bytes, {
+          status: 200,
+          headers: {
+            ...restricted,
+            "Content-Type": x.contentType || "image/webp",
+            "Content-Length": String(x.bytes.byteLength),
+            "X-JILU-Template-ID": id,
+            "X-JILU-Template-Version": String(x.templateVersion)
+          }
+        });
       }
-      if (bucket === "leaseIssue" && m === "POST") return json({ ok: true, lease: await service.lease(subject, body) });
-      if (bucket === "leaseRenew" && m === "POST") return json({ ok: true, lease: await service.renew(subject, body) });
+      if (bucket === "leaseIssue" && m === "POST")
+        return json({ ok: true, lease: await service.lease(subject, body) });
+      if (bucket === "leaseRenew" && m === "POST")
+        return json({ ok: true, lease: await service.renew(subject, body) });
       return json({ ok: false, code: "NOT_FOUND" }, 404);
     } catch (error) {
       const code = error?.code || "TEMPLATE_NOT_AVAILABLE";
@@ -814,75 +1044,243 @@ var createTemplateRuntimeHttpHandler = ({ service, authenticate, limits = {}, no
 
 // packages/template-package-core/src/publish.js
 var fail2 = (code, status = 400, cause) => Object.assign(new Error(code, { cause }), { code, status });
-var bytes = (value) => value instanceof Uint8Array ? value : typeof value === "string" ? Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4)), (c) => c.charCodeAt(0)) : new Uint8Array(value || []);
-var PUBLISH_OPERATION_STATUS = Object.freeze({ BUILDING: "BUILDING", UPLOADED: "UPLOADED", VERIFIED: "VERIFIED", COMMITTING: "COMMITTING", COMPLETED: "COMPLETED", AUDIT_PENDING: "AUDIT_PENDING", FAILED: "FAILED" });
+var bytes = (value) => value instanceof Uint8Array ? value : typeof value === "string" ? Uint8Array.from(
+  atob(
+    value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4)
+  ),
+  (c) => c.charCodeAt(0)
+) : new Uint8Array(value || []);
+var PUBLISH_OPERATION_STATUS = Object.freeze({
+  BUILDING: "BUILDING",
+  UPLOADED: "UPLOADED",
+  VERIFIED: "VERIFIED",
+  COMMITTING: "COMMITTING",
+  COMPLETED: "COMPLETED",
+  AUDIT_PENDING: "AUDIT_PENDING",
+  FAILED: "FAILED"
+});
 var TemplatePublishService = class {
-  constructor({ repository, storage, packageKeys = [], now = () => Date.now(), operationId = () => `pop_${crypto.randomUUID().replace(/-/g, "")}`, builder = buildTemplateBundle, validator = validateTemplateBundle }) {
-    Object.assign(this, { repository, storage, packageKeys, now, operationId, builder, validator });
+  constructor({
+    repository,
+    storage,
+    packageKeys = [],
+    now = () => Date.now(),
+    operationId = () => `pop_${crypto.randomUUID().replace(/-/g, "")}`,
+    builder = buildTemplateBundle,
+    validator = validateTemplateBundle
+  }) {
+    Object.assign(this, {
+      repository,
+      storage,
+      packageKeys,
+      now,
+      operationId,
+      builder,
+      validator
+    });
   }
   activeKey() {
-    const key2 = this.packageKeys.find((x) => x.status === "ACTIVE" && x.privateKey && x.publicKey);
+    const key2 = this.packageKeys.find(
+      (x) => x.status === "ACTIVE" && x.privateKey && x.publicKey
+    );
     if (!key2) throw fail2("TEMPLATE_SIGNING_KEY_UNAVAILABLE", 503);
     return key2;
   }
-  async publish({ templateId, templateVersion, actorId = "admin", requestId = "" }) {
+  async publish({
+    templateId,
+    templateVersion,
+    actorId = "admin",
+    requestId = ""
+  }) {
     if (!this.storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-    const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
+    const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(
+      templateId,
+      Number(templateVersion)
+    );
     if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
     if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
-    if (version.status === "PUBLISHED" && version.contentDigest && version.artifactSha256) return { ...this.response(version), idempotent: true };
-    if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
-    const opId = this.operationId(), op = { operationId: opId, templateId, templateVersion: Number(templateVersion), status: "BUILDING", actorId, requestId: String(requestId).slice(0, 128), createdAt: this.now(), updatedAt: this.now() };
+    if (version.status === "PUBLISHED" && version.contentDigest && version.artifactSha256)
+      return { ...this.response(version), idempotent: true };
+    if (version.status !== "DRAFT")
+      throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
+    const opId = this.operationId(), op = {
+      operationId: opId,
+      templateId,
+      templateVersion: Number(templateVersion),
+      status: "BUILDING",
+      actorId,
+      requestId: String(requestId).slice(0, 128),
+      createdAt: this.now(),
+      updatedAt: this.now()
+    };
     await this.repository.savePublishOperation(op);
     let built, uploaded = false;
     try {
       this.validateTemplate(template);
       const key2 = this.activeKey(), draft = version.draft || {};
-      built = await this.builder({ templateId, templateVersion: Number(templateVersion), name: template.name, description: template.description, layout: draft.layout, assets: (draft.assets || []).map((a) => ({ ...a, bytes: bytes(a.bytes ?? a.data) })), createdAt: version.createdAt || 0, keyId: key2.keyId, privateKey: key2.privateKey });
-      await this.validator({ bytes: built.bytes, expectedTemplateId: templateId, expectedVersion: Number(templateVersion), rendererVersion: 2, keys: this.packageKeys });
-      const existing = await this.storage.getPackage(templateId, Number(templateVersion));
+      built = await this.builder({
+        templateId,
+        templateVersion: Number(templateVersion),
+        name: template.name,
+        description: template.description,
+        layout: draft.layout,
+        assets: (draft.assets || []).map((a) => ({
+          ...a,
+          bytes: bytes(a.bytes ?? a.data)
+        })),
+        createdAt: version.createdAt || 0,
+        keyId: key2.keyId,
+        privateKey: key2.privateKey,
+        algorithm: key2.algorithm || "Ed25519"
+      });
+      await this.validator({
+        bytes: built.bytes,
+        expectedTemplateId: templateId,
+        expectedVersion: Number(templateVersion),
+        rendererVersion: 2,
+        keys: this.packageKeys
+      });
+      const existing = await this.storage.getPackage(
+        templateId,
+        Number(templateVersion)
+      );
       if (existing) {
-        const remote2 = await this.validateRemote(existing, built, templateId, Number(templateVersion));
+        const remote2 = await this.validateRemote(
+          existing,
+          built,
+          templateId,
+          Number(templateVersion)
+        );
         if (!remote2) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
       } else {
         try {
-          await this.storage.putPackage(templateId, Number(templateVersion), built.bytes);
+          await this.storage.putPackage(
+            templateId,
+            Number(templateVersion),
+            built.bytes
+          );
           uploaded = true;
         } catch (error) {
           if (error?.code === "TEMPLATE_VERSION_CONFLICT") {
-            const remote2 = await this.storage.getPackage(templateId, Number(templateVersion));
-            if (!remote2 || !await this.validateRemote(remote2, built, templateId, Number(templateVersion))) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
+            const remote2 = await this.storage.getPackage(
+              templateId,
+              Number(templateVersion)
+            );
+            if (!remote2 || !await this.validateRemote(
+              remote2,
+              built,
+              templateId,
+              Number(templateVersion)
+            ))
+              throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
           } else throw fail2("TEMPLATE_STORAGE_UPLOAD_FAILED", 502, error);
         }
       }
-      await this.updateOp(op, "UPLOADED", { artifactSha256: built.artifactSha256, contentDigest: built.contentDigest, objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}` });
-      const remote = await this.storage.getPackage(templateId, Number(templateVersion)), metadata = await this.storage.getMetadata(templateId, Number(templateVersion));
-      if (!remote || Number(metadata?.size ?? remote.byteLength) !== built.bytes.byteLength || !await this.validateRemote(remote, built, templateId, Number(templateVersion))) throw fail2("TEMPLATE_STORAGE_VERIFY_FAILED", 502);
+      await this.updateOp(op, "UPLOADED", {
+        artifactSha256: built.artifactSha256,
+        contentDigest: built.contentDigest,
+        objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`
+      });
+      const remote = await this.storage.getPackage(
+        templateId,
+        Number(templateVersion)
+      ), metadata = await this.storage.getMetadata(
+        templateId,
+        Number(templateVersion)
+      );
+      if (!remote || Number(metadata?.size ?? remote.byteLength) !== built.bytes.byteLength || !await this.validateRemote(
+        remote,
+        built,
+        templateId,
+        Number(templateVersion)
+      ))
+        throw fail2("TEMPLATE_STORAGE_VERIFY_FAILED", 502);
       await this.updateOp(op, "VERIFIED");
-      const publishedAt = this.now(), published = { ...version, status: "PUBLISHED", previewLayout: structuredClone(draft.layout), contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, packageSha256: built.artifactSha256, packageSize: built.bytes.byteLength, signature: built.manifest.signature.value, packageSignature: built.manifest.signature.value, signatureKeyId: key2.keyId, packageKeyId: key2.keyId, internalObjectRef: op.objectRef, publishedAt, publishedBy: actorId, draft: void 0 }, audit = { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: built.contentDigest, artifactSha256: built.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) };
+      const publishedAt = this.now(), published = {
+        ...version,
+        status: "PUBLISHED",
+        previewLayout: structuredClone(draft.layout),
+        contentDigest: built.contentDigest,
+        artifactSha256: built.artifactSha256,
+        packageSha256: built.artifactSha256,
+        packageSize: built.bytes.byteLength,
+        signature: built.manifest.signature.value,
+        packageSignature: built.manifest.signature.value,
+        signatureKeyId: key2.keyId,
+        signatureAlgorithm: built.manifest.signature.algorithm,
+        packageKeyId: key2.keyId,
+        internalObjectRef: op.objectRef,
+        publishedAt,
+        publishedBy: actorId,
+        draft: void 0
+      }, audit = {
+        eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`,
+        eventType: "TEMPLATE_VERSION_PUBLISHED",
+        actorId,
+        templateId,
+        templateVersion: Number(templateVersion),
+        contentDigest: built.contentDigest,
+        artifactSha256: built.artifactSha256,
+        timestamp: publishedAt,
+        operationId: opId,
+        requestId: String(requestId).slice(0, 128)
+      };
       await this.updateOp(op, "COMMITTING");
       try {
-        await this.repository.commitPublished({ version: published, template: { ...template, latestVersion: Math.max(Number(template.latestVersion) || 0, Number(templateVersion)), updatedAt: publishedAt, publishedAt }, audit, operation: { ...op, status: "COMPLETED", updatedAt: this.now() } });
+        await this.repository.commitPublished({
+          version: published,
+          template: {
+            ...template,
+            latestVersion: Math.max(
+              Number(template.latestVersion) || 0,
+              Number(templateVersion)
+            ),
+            updatedAt: publishedAt,
+            publishedAt
+          },
+          audit,
+          operation: { ...op, status: "COMPLETED", updatedAt: this.now() }
+        });
       } catch (error) {
-        await this.updateOp(op, "FAILED", { errorCode: "TEMPLATE_PUBLISH_COMMIT_FAILED" }).catch(() => {
+        await this.updateOp(op, "FAILED", {
+          errorCode: "TEMPLATE_PUBLISH_COMMIT_FAILED"
+        }).catch(() => {
         });
         throw fail2("TEMPLATE_PUBLISH_COMMIT_FAILED", 500, error);
       }
       return this.response(published);
     } catch (error) {
-      if (!["COMPLETED", "FAILED"].includes(op.status)) await this.updateOp(op, "FAILED", { errorCode: error?.code || "TEMPLATE_PACKAGE_INVALID", uploaded }).catch(() => {
-      });
+      if (!["COMPLETED", "FAILED"].includes(op.status))
+        await this.updateOp(op, "FAILED", {
+          errorCode: error?.code || "TEMPLATE_PACKAGE_INVALID",
+          uploaded
+        }).catch(() => {
+        });
       throw error?.code ? error : fail2("TEMPLATE_PACKAGE_INVALID", 400, error);
     }
   }
   validateTemplate(t) {
-    if (!t || !/^tpl_[a-z0-9_-]{3,80}$/.test(t.templateId) || !String(t.name || "").trim() || !["PUBLIC", "AUTHENTICATED", "USER_RESTRICTED", "GROUP_RESTRICTED", "INTERNAL", "DISABLED"].includes(t.visibility)) throw fail2("TEMPLATE_PACKAGE_INVALID");
+    if (!t || !/^tpl_[a-z0-9_-]{3,80}$/.test(t.templateId) || !String(t.name || "").trim() || ![
+      "PUBLIC",
+      "AUTHENTICATED",
+      "USER_RESTRICTED",
+      "GROUP_RESTRICTED",
+      "INTERNAL",
+      "DISABLED"
+    ].includes(t.visibility))
+      throw fail2("TEMPLATE_PACKAGE_INVALID");
   }
   async validateRemote(remote, built, id, v) {
     try {
       const data = remote instanceof Uint8Array ? remote : new Uint8Array(remote);
       if (data.byteLength !== built.bytes.byteLength) return false;
-      const checked = await this.validator({ bytes: data, expectedTemplateId: id, expectedVersion: v, rendererVersion: 2, keys: this.packageKeys });
+      const checked = await this.validator({
+        bytes: data,
+        expectedTemplateId: id,
+        expectedVersion: v,
+        rendererVersion: 2,
+        keys: this.packageKeys
+      });
       return checked.manifest.artifactSha256 === built.artifactSha256 && checked.manifest.contentDigest === built.contentDigest;
     } catch {
       return false;
@@ -894,17 +1292,39 @@ var TemplatePublishService = class {
     return op;
   }
   response(v) {
-    return { ok: true, templateId: v.templateId, templateVersion: v.templateVersion, status: "PUBLISHED", contentDigest: v.contentDigest, artifactSha256: v.artifactSha256, publishedAt: v.publishedAt };
+    return {
+      ok: true,
+      templateId: v.templateId,
+      templateVersion: v.templateVersion,
+      status: "PUBLISHED",
+      contentDigest: v.contentDigest,
+      artifactSha256: v.artifactSha256,
+      publishedAt: v.publishedAt
+    };
   }
 };
-var cleanupOrphanPackages = async ({ repository, storage, execute = false, olderThanMs = 24 * 36e5, now = Date.now() }) => {
+var cleanupOrphanPackages = async ({
+  repository,
+  storage,
+  execute = false,
+  olderThanMs = 24 * 36e5,
+  now = Date.now()
+}) => {
   if (!storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-  if (typeof storage.listPackages !== "function" || typeof storage.deleteObject !== "function") throw fail2("CAPABILITY_NOT_SUPPORTED", 501);
+  if (typeof storage.listPackages !== "function" || typeof storage.deleteObject !== "function")
+    throw fail2("CAPABILITY_NOT_SUPPORTED", 501);
   const objects = await storage.listPackages(), out = [];
   for (const object of objects) {
     const age = Math.max(0, now - Number(object.createdAt || now)), referenced = await repository.isObjectReferenced(object.objectRef);
     if (!referenced && age >= olderThanMs) {
-      const item = { objectKey: object.safeId || object.objectRef, ageMs: age, reason: "NO_PUBLISHED_VERSION_REFERENCE", referenced: false, estimatedBytes: Number(object.size) || 0, deleted: false };
+      const item = {
+        objectKey: object.safeId || object.objectRef,
+        ageMs: age,
+        reason: "NO_PUBLISHED_VERSION_REFERENCE",
+        referenced: false,
+        estimatedBytes: Number(object.size) || 0,
+        deleted: false
+      };
       if (execute && !await repository.isObjectReferenced(object.objectRef)) {
         await storage.deleteObject(object.objectRef);
         item.deleted = true;
@@ -912,16 +1332,36 @@ var cleanupOrphanPackages = async ({ repository, storage, execute = false, older
       out.push(item);
     }
   }
-  return { dryRun: !execute, objectCount: out.length, estimatedBytes: out.reduce((n, x) => n + x.estimatedBytes, 0), objects: out };
+  return {
+    dryRun: !execute,
+    objectCount: out.length,
+    estimatedBytes: out.reduce((n, x) => n + x.estimatedBytes, 0),
+    objects: out
+  };
 };
 var recoverPublishOperations = async ({ repository, storage }) => {
-  const ops = await repository.listPublishOperations?.(["UPLOADED", "VERIFIED", "COMMITTING", "AUDIT_PENDING", "FAILED"]) || [], result = [];
+  const ops = await repository.listPublishOperations?.([
+    "UPLOADED",
+    "VERIFIED",
+    "COMMITTING",
+    "AUDIT_PENDING",
+    "FAILED"
+  ]) || [], result = [];
   for (const op of ops) {
-    const version = await repository.getVersion(op.templateId, op.templateVersion);
+    const version = await repository.getVersion(
+      op.templateId,
+      op.templateVersion
+    );
     if (version?.status === "PUBLISHED") {
-      if (op.status !== "COMPLETED") await repository.savePublishOperation({ ...op, status: "COMPLETED", updatedAt: Date.now() });
+      if (op.status !== "COMPLETED")
+        await repository.savePublishOperation({
+          ...op,
+          status: "COMPLETED",
+          updatedAt: Date.now()
+        });
       result.push({ operationId: op.operationId, status: "COMPLETED" });
-    } else result.push({ operationId: op.operationId, status: "ORPHAN_CANDIDATE" });
+    } else
+      result.push({ operationId: op.operationId, status: "ORPHAN_CANDIDATE" });
   }
   return result;
 };
@@ -932,20 +1372,61 @@ var dec = new TextDecoder();
 var hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 var b64 = (b) => {
   let s = "";
-  for (let i = 0; i < b.length; i += 32768) s += String.fromCharCode(...b.subarray(i, i + 32768));
+  for (let i = 0; i < b.length; i += 32768)
+    s += String.fromCharCode(...b.subarray(i, i + 32768));
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
-var unb64 = (s) => Uint8Array.from(atob(String(s).replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)), (c) => c.charCodeAt(0));
+var unb64 = (s) => Uint8Array.from(
+  atob(
+    String(s).replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)
+  ),
+  (c) => c.charCodeAt(0)
+);
 var canonical = (v) => v === null || typeof v !== "object" ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map((x) => x === void 0 ? "null" : canonical(x)).join(",")}]` : `{${Object.keys(v).filter((k) => v[k] !== void 0).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
-var sha = async (b) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", b instanceof Uint8Array ? b : enc2.encode(b))));
+var sha = async (b) => hex(
+  new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      b instanceof Uint8Array ? b : enc2.encode(b)
+    )
+  )
+);
 var err2 = (code) => Object.assign(new Error(code), { code });
 var safePath = (p) => typeof p === "string" && !p.includes("..") && !p.includes("\\") && !p.startsWith("/") && !/^[A-Za-z]:/.test(p) && /^[\x20-\x7e]+$/.test(p);
-var PACKAGE_LIMITS = Object.freeze({ package: 10 * 1024 * 1024, assetCount: 32, asset: 5 * 1024 * 1024, manifest: 64 * 1024, layout: 256 * 1024 });
-var MIME_ALLOWLIST = Object.freeze(["image/png", "image/jpeg", "image/webp"]);
+var PACKAGE_LIMITS = Object.freeze({
+  package: 10 * 1024 * 1024,
+  assetCount: 32,
+  asset: 5 * 1024 * 1024,
+  manifest: 64 * 1024,
+  layout: 256 * 1024
+});
+var MIME_ALLOWLIST = Object.freeze([
+  "image/png",
+  "image/jpeg",
+  "image/webp"
+]);
 var WEB_DIY_FORMAT = "xianchang-jilu-watermark-scheme";
 var WEB_DIY_VERSION = 1;
-var officialTypes = /* @__PURE__ */ new Set(["text", "single-select", "multi-select", "person", "system-time", "location", "system-weather", "image", "logo", "custom-text"]);
-var typeAliases = { time: "system-time", date: "system-time", location: "location", weather: "system-weather", person: "person", logo: "logo" };
+var officialTypes = /* @__PURE__ */ new Set([
+  "text",
+  "single-select",
+  "multi-select",
+  "person",
+  "system-time",
+  "location",
+  "system-weather",
+  "image",
+  "logo",
+  "custom-text"
+]);
+var typeAliases = {
+  time: "system-time",
+  date: "system-time",
+  location: "location",
+  weather: "system-weather",
+  person: "person",
+  logo: "logo"
+};
 var parseWebDiyExport = (value) => {
   let raw;
   try {
@@ -953,8 +1434,10 @@ var parseWebDiyExport = (value) => {
   } catch {
     throw err2("TEMPLATE_JSON_INVALID");
   }
-  if (raw?.format && raw.format !== WEB_DIY_FORMAT) throw err2("TEMPLATE_FORMAT_UNSUPPORTED");
-  if (raw?.version != null && Number(raw.version) !== WEB_DIY_VERSION) throw err2("TEMPLATE_VERSION_UNSUPPORTED");
+  if (raw?.format && raw.format !== WEB_DIY_FORMAT)
+    throw err2("TEMPLATE_FORMAT_UNSUPPORTED");
+  if (raw?.version != null && Number(raw.version) !== WEB_DIY_VERSION)
+    throw err2("TEMPLATE_VERSION_UNSUPPORTED");
   return raw;
 };
 var normalizeWebDiyExport = (value) => {
@@ -965,66 +1448,230 @@ var normalizeWebDiyExport = (value) => {
     let fieldId = `field_${stem || `item_${i + 1}`}`;
     while (used.has(fieldId)) fieldId = `${fieldId.slice(0, 60)}_${i + 1}`;
     used.add(fieldId);
-    return { ...f, fieldId, type: officialTypes.has(f.type) ? f.type : typeAliases[f.key] || "text", label: String(f.label || f.sample || `\u680F\u76EE ${i + 1}`).slice(0, 120) };
+    return {
+      ...f,
+      fieldId,
+      type: officialTypes.has(f.type) ? f.type : typeAliases[f.key] || "text",
+      label: String(f.label || f.sample || `\u680F\u76EE ${i + 1}`).slice(0, 120)
+    };
   }), assets = Array.isArray(raw.assets) ? raw.assets : Object.entries(raw.assets || {}).filter(([, a]) => a?.data).map(([id, a]) => {
     const ext = /^(png|jpe?g|webp)$/i.test(a.ext) ? a.ext.toLowerCase().replace("jpeg", "jpg") : "png";
-    return { id, path: `assets/${id}.${ext}`, mimeType: ext === "jpg" ? "image/jpeg" : `image/${ext}`, data: a.data };
+    return {
+      id,
+      path: `assets/${id}.${ext}`,
+      mimeType: ext === "jpg" ? "image/jpeg" : `image/${ext}`,
+      data: a.data
+    };
   });
-  return { layout: { ...source, identity: "OFFICIAL", origin: "official", customTemplateId: void 0, fields }, assets };
+  return {
+    layout: {
+      ...source,
+      identity: "OFFICIAL",
+      origin: "official",
+      customTemplateId: void 0,
+      fields
+    },
+    assets
+  };
 };
 var validateLayout = (layout) => {
-  if (!layout || !Array.isArray(layout.fields)) throw err2("TEMPLATE_PACKAGE_INVALID");
+  if (!layout || !Array.isArray(layout.fields))
+    throw err2("TEMPLATE_PACKAGE_INVALID");
   const ids = /* @__PURE__ */ new Set();
   for (const f of layout.fields) {
-    if (!/^field_[a-z0-9_-]{2,64}$/.test(f?.fieldId || "") || ids.has(f.fieldId)) throw err2("TEMPLATE_PACKAGE_INVALID");
+    if (!/^field_[a-z0-9_-]{2,64}$/.test(f?.fieldId || "") || ids.has(f.fieldId))
+      throw err2("TEMPLATE_PACKAGE_INVALID");
     ids.add(f.fieldId);
-    if (!["text", "single-select", "multi-select", "person", "location", "system-time", "system-weather", "image", "logo", "custom-text"].includes(f.type)) throw err2("TEMPLATE_PACKAGE_INVALID");
+    if (![
+      "text",
+      "single-select",
+      "multi-select",
+      "person",
+      "location",
+      "system-time",
+      "system-weather",
+      "image",
+      "logo",
+      "custom-text"
+    ].includes(f.type))
+      throw err2("TEMPLATE_PACKAGE_INVALID");
   }
   return true;
 };
-var signaturePayload = (m) => enc2.encode(canonical({ format: m.format, formatVersion: m.formatVersion, templateId: m.templateId, templateVersion: m.templateVersion, contentDigest: m.contentDigest, minimumRendererVersion: m.rendererCompatibility.minimumRendererVersion }));
-var importPrivate = (k) => crypto.subtle.importKey("pkcs8", unb64(k), { name: "Ed25519" }, false, ["sign"]);
-var importPublic = (k) => crypto.subtle.importKey("raw", unb64(k), { name: "Ed25519" }, false, ["verify"]);
+var SIGNATURE_ALGORITHMS = Object.freeze({
+  ED25519: "Ed25519",
+  ECDSA_P256: "ECDSA-P256-SHA256"
+});
+var signaturePayload = (m) => enc2.encode(
+  canonical(
+    m.signature?.algorithm === SIGNATURE_ALGORITHMS.ECDSA_P256 ? {
+      format: m.format,
+      formatVersion: m.formatVersion,
+      templateId: m.templateId,
+      templateVersion: m.templateVersion,
+      contentDigest: m.contentDigest,
+      minimumRendererVersion: m.rendererCompatibility.minimumRendererVersion,
+      signatureAlgorithm: m.signature.algorithm,
+      signatureKeyId: m.signature.keyId
+    } : {
+      format: m.format,
+      formatVersion: m.formatVersion,
+      templateId: m.templateId,
+      templateVersion: m.templateVersion,
+      contentDigest: m.contentDigest,
+      minimumRendererVersion: m.rendererCompatibility.minimumRendererVersion
+    }
+  )
+);
+var importPrivate = (k) => crypto.subtle.importKey("pkcs8", unb64(k), { name: "Ed25519" }, false, [
+  "sign"
+]);
+var importPublic = (k) => crypto.subtle.importKey("raw", unb64(k), { name: "Ed25519" }, false, [
+  "verify"
+]);
 var signEd25519 = async (data, key2) => {
   try {
-    return new Uint8Array(await crypto.subtle.sign("Ed25519", await importPrivate(key2), data));
+    return new Uint8Array(
+      await crypto.subtle.sign("Ed25519", await importPrivate(key2), data)
+    );
   } catch {
     return signAsync(data, unb64(key2).slice(-32));
   }
 };
 var verifyEd25519 = async (signature, data, key2) => {
   try {
-    return await crypto.subtle.verify("Ed25519", await importPublic(key2), signature, data);
+    return await crypto.subtle.verify(
+      "Ed25519",
+      await importPublic(key2),
+      signature,
+      data
+    );
   } catch {
     return verifyAsync(signature, data, unb64(key2));
   }
 };
-var buildTemplateBundle = async ({ templateId, templateVersion, name = "", description = "", layout, assets = [], createdAt = 0, keyId, privateKey }) => {
-  if (!/^tpl_[a-z0-9_-]{3,80}$/.test(templateId) || !Number.isInteger(templateVersion) || templateVersion < 1) throw err2("TEMPLATE_PACKAGE_INVALID");
+var importP256Private = (k) => crypto.subtle.importKey(
+  "pkcs8",
+  unb64(k),
+  { name: "ECDSA", namedCurve: "P-256" },
+  false,
+  ["sign"]
+);
+var importP256Public = (k) => crypto.subtle.importKey(
+  "raw",
+  unb64(k),
+  { name: "ECDSA", namedCurve: "P-256" },
+  false,
+  ["verify"]
+);
+var signDetached = async (algorithm, data, key2) => {
+  if (algorithm === SIGNATURE_ALGORITHMS.ED25519) return signEd25519(data, key2);
+  if (algorithm === SIGNATURE_ALGORITHMS.ECDSA_P256)
+    return new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        await importP256Private(key2),
+        data
+      )
+    );
+  throw err2("TEMPLATE_SIGNATURE_ALGORITHM_UNSUPPORTED");
+};
+var verifyDetached = async (algorithm, signature, data, key2) => {
+  if (algorithm === SIGNATURE_ALGORITHMS.ED25519)
+    return verifyEd25519(signature, data, key2);
+  if (algorithm === SIGNATURE_ALGORITHMS.ECDSA_P256)
+    return crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      await importP256Public(key2),
+      signature,
+      data
+    );
+  throw err2("TEMPLATE_SIGNATURE_ALGORITHM_UNSUPPORTED");
+};
+var buildTemplateBundle = async ({
+  templateId,
+  templateVersion,
+  name = "",
+  description = "",
+  layout,
+  assets = [],
+  createdAt = 0,
+  keyId,
+  privateKey,
+  algorithm = SIGNATURE_ALGORITHMS.ED25519
+}) => {
+  if (!/^tpl_[a-z0-9_-]{3,80}$/.test(templateId) || !Number.isInteger(templateVersion) || templateVersion < 1)
+    throw err2("TEMPLATE_PACKAGE_INVALID");
   validateLayout(layout);
   const layoutBytes = enc2.encode(canonical(layout));
-  if (layoutBytes.length > PACKAGE_LIMITS.layout) throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
-  if (assets.length > PACKAGE_LIMITS.assetCount) throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
+  if (layoutBytes.length > PACKAGE_LIMITS.layout)
+    throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
+  if (assets.length > PACKAGE_LIMITS.assetCount)
+    throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
   const paths = /* @__PURE__ */ new Set(["manifest.json", "layout.json"]), files = { "layout.json": b64(layoutBytes) }, entries = [];
   for (const a of [...assets].sort((x, y) => x.path.localeCompare(y.path))) {
-    if (!safePath(a.path) || !a.path.startsWith("assets/") || paths.has(a.path.toLowerCase()) || !MIME_ALLOWLIST.includes(a.mimeType)) throw err2("TEMPLATE_PACKAGE_INVALID");
+    if (!safePath(a.path) || !a.path.startsWith("assets/") || paths.has(a.path.toLowerCase()) || !MIME_ALLOWLIST.includes(a.mimeType))
+      throw err2("TEMPLATE_PACKAGE_INVALID");
     paths.add(a.path.toLowerCase());
     const bytes3 = a.bytes instanceof Uint8Array ? a.bytes : new Uint8Array(a.bytes);
-    if (bytes3.length > PACKAGE_LIMITS.asset) throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
+    if (bytes3.length > PACKAGE_LIMITS.asset)
+      throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
     files[a.path] = b64(bytes3);
-    entries.push({ id: a.id, path: a.path, sha256: await sha(bytes3), mimeType: a.mimeType, size: bytes3.length });
+    entries.push({
+      id: a.id,
+      path: a.path,
+      sha256: await sha(bytes3),
+      mimeType: a.mimeType,
+      size: bytes3.length
+    });
   }
-  const content = { layout: { path: "layout.json", sha256: await sha(layoutBytes), size: layoutBytes.length }, assets: entries }, contentDigest = await sha(canonical(content));
-  let manifest = { format: "jilu-template", formatVersion: 2, templateId, templateVersion, name, description, layout: content.layout, assets: entries, rendererCompatibility: { minimumRendererVersion: 2 }, createdAt, contentDigest, artifactSha256: null, signature: { algorithm: "Ed25519", keyId, value: "" } };
-  manifest.signature.value = b64(await signEd25519(signaturePayload(manifest), privateKey));
+  const content = {
+    layout: {
+      path: "layout.json",
+      sha256: await sha(layoutBytes),
+      size: layoutBytes.length
+    },
+    assets: entries
+  }, contentDigest = await sha(canonical(content));
+  let manifest = {
+    format: "jilu-template",
+    formatVersion: 2,
+    templateId,
+    templateVersion,
+    name,
+    description,
+    layout: content.layout,
+    assets: entries,
+    rendererCompatibility: { minimumRendererVersion: 2 },
+    createdAt,
+    contentDigest,
+    artifactSha256: null,
+    signature: { algorithm, keyId, value: "" }
+  };
+  manifest.signature.value = b64(
+    await signDetached(algorithm, signaturePayload(manifest), privateKey)
+  );
   const artifact = enc2.encode(canonical({ manifest, files }));
-  if (artifact.length > PACKAGE_LIMITS.package) throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
+  if (artifact.length > PACKAGE_LIMITS.package)
+    throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
   manifest.artifactSha256 = await sha(artifact);
   const bytes2 = enc2.encode(canonical({ manifest, files }));
-  return { bytes: bytes2, manifest: { ...manifest }, contentDigest, artifactSha256: manifest.artifactSha256 };
+  return {
+    bytes: bytes2,
+    manifest: { ...manifest },
+    contentDigest,
+    artifactSha256: manifest.artifactSha256
+  };
 };
-var validateTemplateBundle = async ({ bytes: bytes2, expectedTemplateId, expectedVersion, rendererVersion, keys }) => {
-  if (bytes2.length > PACKAGE_LIMITS.package) throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
+var validateTemplateBundle = async ({
+  bytes: bytes2,
+  expectedTemplateId,
+  expectedVersion,
+  rendererVersion,
+  keys
+}) => {
+  if (bytes2.length > PACKAGE_LIMITS.package)
+    throw err2("TEMPLATE_PACKAGE_TOO_LARGE");
   let bundle;
   try {
     bundle = JSON.parse(dec.decode(bytes2));
@@ -1033,48 +1680,123 @@ var validateTemplateBundle = async ({ bytes: bytes2, expectedTemplateId, expecte
   }
   const m = bundle.manifest;
   if (m?.formatVersion !== 2) throw err2("TEMPLATE_FORMAT_UNSUPPORTED");
-  if (m.templateId !== expectedTemplateId || m.templateVersion !== expectedVersion) throw err2("TEMPLATE_PACKAGE_INVALID");
+  if (m.templateId !== expectedTemplateId || m.templateVersion !== expectedVersion)
+    throw err2("TEMPLATE_PACKAGE_INVALID");
   const unsignedArtifact = structuredClone(bundle);
   unsignedArtifact.manifest.artifactSha256 = null;
-  if (await sha(enc2.encode(canonical(unsignedArtifact))) !== m.artifactSha256) throw err2("TEMPLATE_PACKAGE_HASH_MISMATCH");
-  if (rendererVersion < m.rendererCompatibility.minimumRendererVersion) throw err2("RENDERER_UPDATE_REQUIRED");
-  const key2 = keys.find((x) => x.keyId === m.signature.keyId && ["ACTIVE", "VERIFY_ONLY"].includes(x.status));
+  if (await sha(enc2.encode(canonical(unsignedArtifact))) !== m.artifactSha256)
+    throw err2("TEMPLATE_PACKAGE_HASH_MISMATCH");
+  if (rendererVersion < m.rendererCompatibility.minimumRendererVersion)
+    throw err2("RENDERER_UPDATE_REQUIRED");
+  const key2 = keys.find(
+    (x) => x.keyId === m.signature.keyId && ["ACTIVE", "VERIFY_ONLY"].includes(x.status)
+  );
   if (!key2) throw err2("TEMPLATE_SIGNATURE_KEY_UNKNOWN");
-  if (!await verifyEd25519(unb64(m.signature.value), signaturePayload(m), key2.publicKey)) throw err2("TEMPLATE_SIGNATURE_INVALID");
+  const algorithm = m.signature?.algorithm || SIGNATURE_ALGORITHMS.ED25519;
+  if (key2.algorithm && key2.algorithm !== algorithm)
+    throw err2("TEMPLATE_SIGNATURE_INVALID");
+  if (!await verifyDetached(
+    algorithm,
+    unb64(m.signature.value),
+    signaturePayload(m),
+    key2.publicKey
+  ))
+    throw err2("TEMPLATE_SIGNATURE_INVALID");
   validateLayout(JSON.parse(dec.decode(unb64(bundle.files["layout.json"]))));
-  if (await sha(unb64(bundle.files["layout.json"])) !== m.layout.sha256) throw err2("TEMPLATE_ASSET_HASH_MISMATCH");
+  if (await sha(unb64(bundle.files["layout.json"])) !== m.layout.sha256)
+    throw err2("TEMPLATE_ASSET_HASH_MISMATCH");
   const listed = /* @__PURE__ */ new Set(["layout.json"]);
   for (const a of m.assets) {
     listed.add(a.path);
-    if (!safePath(a.path) || !bundle.files[a.path] || await sha(unb64(bundle.files[a.path])) !== a.sha256) throw err2("TEMPLATE_ASSET_HASH_MISMATCH");
+    if (!safePath(a.path) || !bundle.files[a.path] || await sha(unb64(bundle.files[a.path])) !== a.sha256)
+      throw err2("TEMPLATE_ASSET_HASH_MISMATCH");
   }
-  if (Object.keys(bundle.files).some((x) => !listed.has(x))) throw err2("TEMPLATE_PACKAGE_INVALID");
+  if (Object.keys(bundle.files).some((x) => !listed.has(x)))
+    throw err2("TEMPLATE_PACKAGE_INVALID");
   return { valid: true, manifest: m };
 };
-var tokenKey = async (secret) => crypto.subtle.importKey("raw", enc2.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+var tokenKey = async (secret) => crypto.subtle.importKey(
+  "raw",
+  enc2.encode(secret),
+  { name: "HMAC", hash: "SHA-256" },
+  false,
+  ["sign", "verify"]
+);
 var issueDownloadToken = async (payload, secret) => {
-  const body = b64(enc2.encode(canonical(payload))), sig = b64(new Uint8Array(await crypto.subtle.sign("HMAC", await tokenKey(secret), enc2.encode(body))));
+  const body = b64(enc2.encode(canonical(payload))), sig = b64(
+    new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        await tokenKey(secret),
+        enc2.encode(body)
+      )
+    )
+  );
   return `${body}.${sig}`;
 };
 var verifyDownloadToken = async (token, secret, now = Date.now()) => {
   const [body, sig] = String(token).split(".");
-  if (!body || !sig || !await crypto.subtle.verify("HMAC", await tokenKey(secret), unb64(sig), enc2.encode(body))) throw err2("TEMPLATE_DOWNLOAD_TOKEN_INVALID");
+  if (!body || !sig || !await crypto.subtle.verify(
+    "HMAC",
+    await tokenKey(secret),
+    unb64(sig),
+    enc2.encode(body)
+  ))
+    throw err2("TEMPLATE_DOWNLOAD_TOKEN_INVALID");
   const p = JSON.parse(dec.decode(unb64(body)));
   if (p.expiresAt <= now) throw err2("TEMPLATE_DOWNLOAD_TOKEN_EXPIRED");
   return p;
 };
-var issueLease = async ({ lease, keyId, privateKey }) => {
-  const body = { schema: "jilu-template-entitlement-lease", version: 1, ...lease, keyId };
-  return { ...body, signature: b64(await signEd25519(enc2.encode(canonical(body)), privateKey)) };
+var issueLease = async ({
+  lease,
+  keyId,
+  privateKey,
+  algorithm = SIGNATURE_ALGORITHMS.ED25519
+}) => {
+  const body = {
+    schema: "jilu-template-entitlement-lease",
+    version: 1,
+    ...lease,
+    keyId,
+    ...algorithm === SIGNATURE_ALGORITHMS.ED25519 ? {} : { algorithm }
+  };
+  return {
+    ...body,
+    signature: b64(
+      await signDetached(algorithm, enc2.encode(canonical(body)), privateKey)
+    )
+  };
 };
-var verifyLease = async ({ lease, keys, now = Date.now(), subjectId, templateId, templateVersion, entitlementEpoch }) => {
-  const { signature, ...body } = lease || {}, key2 = keys.find((x) => x.keyId === body.keyId && ["ACTIVE", "VERIFY_ONLY"].includes(x.status));
-  if (!key2 || !await verifyEd25519(unb64(signature || ""), enc2.encode(canonical(body)), key2.publicKey)) throw err2("TEMPLATE_LEASE_INVALID");
+var verifyLease = async ({
+  lease,
+  keys,
+  now = Date.now(),
+  subjectId,
+  templateId,
+  templateVersion,
+  entitlementEpoch
+}) => {
+  const { signature, ...body } = lease || {}, key2 = keys.find(
+    (x) => x.keyId === body.keyId && ["ACTIVE", "VERIFY_ONLY"].includes(x.status)
+  ), algorithm = body.algorithm || SIGNATURE_ALGORITHMS.ED25519;
+  if (!key2 || key2.algorithm && key2.algorithm !== algorithm || !await verifyDetached(
+    algorithm,
+    unb64(signature || ""),
+    enc2.encode(canonical(body)),
+    key2.publicKey
+  ))
+    throw err2("TEMPLATE_LEASE_INVALID");
   if (body.expiresAt <= now) throw err2("TEMPLATE_LEASE_EXPIRED");
-  if (body.subjectId !== subjectId || body.templateId !== templateId || body.templateVersion !== templateVersion || body.entitlementEpoch !== entitlementEpoch) throw err2("TEMPLATE_LEASE_INVALID");
+  if (body.subjectId !== subjectId || body.templateId !== templateId || body.templateVersion !== templateVersion || body.entitlementEpoch !== entitlementEpoch)
+    throw err2("TEMPLATE_LEASE_INVALID");
   return true;
 };
-var decideTemplateUpdate = ({ installedVersion, latestVersion, minimumSupportedVersion, updatePolicy }) => installedVersion >= latestVersion ? "CURRENT" : installedVersion < minimumSupportedVersion ? "FORCED_UPDATE_REQUIRED" : updatePolicy === "AUTO" ? "AUTO_UPDATE_AVAILABLE" : updatePolicy === "PROMPT" ? "PROMPT_UPDATE_AVAILABLE" : "FORCED_UPDATE_REQUIRED";
+var decideTemplateUpdate = ({
+  installedVersion,
+  latestVersion,
+  minimumSupportedVersion,
+  updatePolicy
+}) => installedVersion >= latestVersion ? "CURRENT" : installedVersion < minimumSupportedVersion ? "FORCED_UPDATE_REQUIRED" : updatePolicy === "AUTO" ? "AUTO_UPDATE_AVAILABLE" : updatePolicy === "PROMPT" ? "PROMPT_UPDATE_AVAILABLE" : "FORCED_UPDATE_REQUIRED";
 var MemoryAtomicInstaller = class {
   constructor() {
     this.active = /* @__PURE__ */ new Map();
@@ -1105,6 +1827,7 @@ export {
   MemoryTemplateObjectStorage,
   PACKAGE_LIMITS,
   PUBLISH_OPERATION_STATUS,
+  SIGNATURE_ALGORITHMS,
   TEMPLATE_RUNTIME_DEFAULTS,
   TemplatePublishService,
   TemplateRuntimeService,
