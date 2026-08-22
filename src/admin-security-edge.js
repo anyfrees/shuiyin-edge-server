@@ -193,7 +193,7 @@ const routePermission = (path, method) => {
   return null
 }
 
-export const createEdgeAdminHandler = ({ kv, env, forward }) => async request => {
+export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken }) => async request => {
   const service = new EdgeAdminSecurityService({ kv, env }), url = new URL(request.url), path = url.pathname.replace(/^\/admin\/v1\/console/, ''), method = request.method
   let migrationAuthorized=false
   try {
@@ -265,7 +265,7 @@ export const createEdgeAdminHandler = ({ kv, env, forward }) => async request =>
     if (path === '/password/change' && method === 'POST') { const b=await bodyOf(request); if(!access.principal.passwordHash || !await argonHash(String(b.currentPassword||''),access.principal.passwordHash) || String(b.newPassword||'').length<12) throw fail('PASSWORD_CHANGE_DENIED',400); access.principal.passwordHash=await service.passwordHash(String(b.newPassword)); access.principal.authzEpoch++; access.principal.updatedAt=Date.now(); await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return json({ok:true}) }
     if (path === '/password' && method === 'DELETE') { if (!(access.principal.passkeyIds || []).length) throw fail('PASSKEY_REQUIRED',409); access.principal.passwordHash=null; access.principal.authzEpoch++; await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return new Response(null,{status:204,headers:{'Set-Cookie':'jilu_admin_session=; Path=/admin/; HttpOnly; SameSite=Strict; Max-Age=0; Secure'}}) }
     const requirement = routePermission(path, method)
-    if (requirement && forward) { await service.require(access, requirement); const headers = new Headers(request.headers); headers.set('authorization', `Bearer ${env.ADMIN_TOKEN}`); return forward(new Request(request, { headers })) }
+    if (requirement && forward) { await service.require(access, requirement); const headers = new Headers(request.headers); headers.set('authorization', `Bearer ${forwardToken||env.ADMIN_TOKEN}`); return forward(new Request(request, { headers })) }
     return json({ ok: false, code: 'NOT_FOUND' }, 404)
   } catch (error) { const problem = /** @type {any} */ (error); return json({ ok: false, code: problem.code || 'ADMIN_OPERATION_FAILED', ...(migrationAuthorized?{diagnostic:clean(problem.message||problem.name,160)}:{}) }, problem.status || 500) }
 }
