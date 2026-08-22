@@ -69,6 +69,17 @@ const env = {
   JILU_IDENTITY_HMAC_KEY: "test-only-hmac-key",
   JILU_SUBJECT_DERIVATION_KEY: "test-only-subject-key",
 };
+
+test("admin responses preserve CORS headers, including authentication errors", async () => {
+  const request = new Request("https://api.shuiyin.nnu.cn/admin/v1/console/me", {
+    headers: { Origin: "https://shuiyin.nnu.cn" },
+  });
+  const response = await handleRequest(request, env, new MemoryKv());
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://shuiyin.nnu.cn");
+  assert.equal(response.headers.get("access-control-allow-credentials"), "true");
+  assert.match(response.headers.get("vary") || "", /Origin/i);
+});
 const phase8cHashes = Array.from({ length: 16 }, (_, i) =>
   i.toString(16).padStart(64, "0"),
 );

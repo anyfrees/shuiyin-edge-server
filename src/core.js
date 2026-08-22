@@ -68,6 +68,11 @@ const compareManifest = (stored, supplied, size, moderate = 38, strong = 62) => 
 }
 const compareIntegrity = (stored, supplied) => compareManifest(stored, supplied, INTEGRITY_BLOCKS, INTEGRITY_BLOCK_DISTANCE, INTEGRITY_SINGLE_BLOCK_DISTANCE)
 const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers })
+const withHeaders = (response, headers) => {
+  const merged = new Headers(response.headers)
+  Object.entries(headers).forEach(([key, value]) => merged.set(key, value))
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: merged })
+}
 const corsHeaders = (request, env) => {
   const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }
   const origin = request.headers.get('origin')
@@ -268,7 +273,7 @@ export async function handleRequest(request, env, kv) {
     if (url.pathname.startsWith('/admin/v1/console')) {
       let admin = adminHandlers.get(env)
       if (!admin) { admin = createEdgeAdminHandler({ kv, env, forward: handlers.entitlement }); adminHandlers.set(env, admin) }
-      return admin(request)
+      return withHeaders(await admin(request), headers)
     }
     return (runtime?handlers.runtime:handlers.entitlement)(request)
   }
