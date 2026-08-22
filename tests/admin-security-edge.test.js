@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
-import { argon2id } from 'hash-wasm'
+import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { createEdgeAdminHandler } from '../src/admin-security-edge.js'
 
 class Kv {
@@ -13,7 +13,8 @@ class Kv {
 }
 const migration = async password => {
   const salt = new Uint8Array(16); crypto.getRandomValues(salt)
-  return JSON.stringify({ schemaVersion: 1, migrationId: 'mig_test', principals: [{ adminId: 'adm_test', username: 'admin', displayName: '管理员', status: 'ACTIVE', authzEpoch: 1, passwordHash: await argon2id({ password, salt, parallelism: 1, iterations: 1, memorySize: 1024, hashLength: 32, outputType: 'encoded' }), roles: ['SUPER_ADMIN'], templateScopes: [], groupScopes: [], passkeys: [], recoveryCodes: [], createdAt: 1, updatedAt: 1 }], audits: [] })
+  const hash = Buffer.from(await argon2idAsync(password, salt, { t: 1, m: 1024, p: 1, dkLen: 32 })).toString('base64url'), encoded = `$argon2id$v=19$m=1024,t=1,p=1$${Buffer.from(salt).toString('base64url')}$${hash}`
+  return JSON.stringify({ schemaVersion: 1, migrationId: 'mig_test', principals: [{ adminId: 'adm_test', username: 'admin', displayName: '管理员', status: 'ACTIVE', authzEpoch: 1, passwordHash: encoded, roles: ['SUPER_ADMIN'], templateScopes: [], groupScopes: [], passkeys: [], recoveryCodes: [], createdAt: 1, updatedAt: 1 }], audits: [] })
 }
 const invoke = (handler, path, { method = 'GET', body, headers = {} } = {}) => handler(new Request(`https://api.example${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) }))
 
