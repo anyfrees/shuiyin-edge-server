@@ -197,6 +197,14 @@ var restricted = { "Cache-Control": "private, no-store", "X-Content-Type-Options
 var json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { ...noStore, ...headers } });
 var unavailable = () => fail("TEMPLATE_NOT_AVAILABLE", 404);
 var asBytes = (value) => value instanceof Uint8Array ? value : new Uint8Array(value);
+var packagePreview = (raw) => {
+  try {
+    const bundle = JSON.parse(new TextDecoder().decode(asBytes(raw))), asset = (bundle.manifest?.assets || []).find((x) => String(x.mimeType || "").startsWith("image/") && bundle.files?.[x.path]);
+    return asset ? { bytes: Uint8Array.from(atob(bundle.files[asset.path].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - bundle.files[asset.path].length % 4) % 4)), (c) => c.charCodeAt(0)), contentType: asset.mimeType } : null;
+  } catch {
+    return null;
+  }
+};
 var TEMPLATE_RUNTIME_DEFAULTS = Object.freeze({ downloadTokenTtlMs: 18e4, maxLeaseHours: 168, publicKeysMaxAge: 300 });
 var TemplateRuntimeService = class {
   constructor({ entitlementService, repository, storage, downloadTokenKey, packageKeys = [], leaseKeys = [], additionalPublicKeys = [], now = () => Date.now(), downloadTokenTtlMs = TEMPLATE_RUNTIME_DEFAULTS.downloadTokenTtlMs, maxLeaseHours = TEMPLATE_RUNTIME_DEFAULTS.maxLeaseHours }) {
@@ -229,9 +237,15 @@ var TemplateRuntimeService = class {
   }
   async preview(subject, templateId, templateVersion) {
     if (!this.storage) throw fail("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-    const version = Number(templateVersion) || Number((await this.repository.getTemplate(templateId))?.latestVersion), x = await this.authorized(subject, templateId, version), bytes2 = await this.storage.getPreview?.(templateId, version);
+    const version = Number(templateVersion) || Number((await this.repository.getTemplate(templateId))?.latestVersion), x = await this.authorized(subject, templateId, version);
+    let bytes2 = await this.storage.getPreview?.(templateId, version), contentType = "image/webp";
+    if (!bytes2) {
+      const fallback = packagePreview(await this.storage.getPackage(templateId, version));
+      bytes2 = fallback?.bytes;
+      contentType = fallback?.contentType;
+    }
     if (!bytes2) throw fail("TEMPLATE_PACKAGE_NOT_AVAILABLE", 404);
-    return { bytes: asBytes(bytes2), templateVersion: version, version: x.version };
+    return { bytes: asBytes(bytes2), contentType, templateVersion: version, version: x.version };
   }
   activeLeaseKey() {
     const key2 = this.leaseKeys.find((x) => x.status === "ACTIVE" && x.privateKey);
@@ -279,7 +293,7 @@ var createTemplateRuntimeHttpHandler = ({ service, authenticate, limits = {}, no
       }
       if (bucket === "preview" && m === "GET") {
         const id = decodeURIComponent(p.slice("/v1/templates/preview/".length)), x = await service.preview(subject, id, url.searchParams.get("version"));
-        return new Response(x.bytes, { status: 200, headers: { ...restricted, "Content-Type": "image/webp", "Content-Length": String(x.bytes.byteLength), "X-JILU-Template-ID": id, "X-JILU-Template-Version": String(x.templateVersion) } });
+        return new Response(x.bytes, { status: 200, headers: { ...restricted, "Content-Type": x.contentType || "image/webp", "Content-Length": String(x.bytes.byteLength), "X-JILU-Template-ID": id, "X-JILU-Template-Version": String(x.templateVersion) } });
       }
       if (bucket === "leaseIssue" && m === "POST") return json({ ok: true, lease: await service.lease(subject, body) });
       if (bucket === "leaseRenew" && m === "POST") return json({ ok: true, lease: await service.renew(subject, body) });

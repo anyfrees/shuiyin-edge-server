@@ -16,11 +16,13 @@
       "binding": "PROVENANCE_KV"
     }
   ],
+  "d1_databases": [{ "binding": "PROVENANCE_D1", "database_name": "jilu-provenance", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
   "vars": {
     "ALLOWED_ORIGIN": "https://shuiyin.nnu.cn",
+    "PROVENANCE_REQUIRE_INTEGRITY_V2": "true",
     "WECHAT_APP_ID": "wx9321e5acb8f5745e"
   },
   "secrets": {
-    "required": ["WECHAT_APP_SECRET"]
+    "required": ["WECHAT_APP_SECRET", "JILU_IDENTITY_HMAC_KEY", "JILU_SUBJECT_DERIVATION_KEY", "TENCENT_MAP_KEY", "JILU_CAPTURE_TICKET_KEYS", "JILU_PROVENANCE_RECEIPT_KEYS"]
   }
 }

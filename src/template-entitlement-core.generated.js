@@ -878,7 +878,8 @@ var TemplateEntitlementService = class {
   async detail(subject, templateId) {
     const ctx = await this.context(subject, templateId);
     if (!evaluateTemplateAccess(ctx).allowed) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
-    return publicTemplate(ctx.template);
+    const version = await this.repository.getVersion(templateId, Number(ctx.template.latestVersion));
+    return { ...publicTemplate(ctx.template), previewLayout: version?.previewLayout || null };
   }
   async catalog(subject, { category = "all", scope = "all", limit = 20, cursor = null } = {}) {
     if (!CATEGORIES.includes(category)) throw new EntitlementError("INVALID_CATEGORY");
