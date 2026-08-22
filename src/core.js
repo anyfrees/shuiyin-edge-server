@@ -3,6 +3,16 @@ import { EdgeOneTemplateRepository, TemplateEntitlementService, createTemplateHt
 import { TemplateRuntimeService, TemplatePublishService, createTemplateRuntimeHttpHandler, CloudflareR2TemplateStorage, EdgeOneBlobTemplateStorage } from './template-package-core.generated.js'
 import { CaptureTicketRuntimeService, ProvenanceRegistrationServiceV2, ProvenanceVerificationServiceV2, ProvenanceVerificationExchangeServiceV3, createProvenanceVerificationExchangeHttpHandler, createEdgeCaptureTicketHandler, createEdgeProvenanceRegistrationHandler, createEsaProvenanceRegistrationHandler, createEdgeProvenanceVerificationHandler, createEsaProvenanceVerificationHandler } from './provenance-core.generated.js'
 import { D1ProvenanceCommitRepository, EdgeOneBlobProvenanceCommitRepository } from './provenance-repositories.js'
+
+// Some EdgeOne Edge Function isolates expose the Fetch API without the newer
+// Response.json() convenience method. Keep all generated handlers portable.
+if (typeof Response.json !== 'function') {
+  Response.json = (body, init = {}) => new Response(JSON.stringify(body), {
+    ...init,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...(init.headers || {}) },
+  })
+}
+
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000
 const VISUAL_MATCH_DISTANCE = 24
 const IOS_SHARE_MATCH_DISTANCE = 72
