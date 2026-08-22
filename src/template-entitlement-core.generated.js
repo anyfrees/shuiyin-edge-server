@@ -494,12 +494,29 @@ var handle = async ({
         let stage = "CREATE_TEMPLATE";
         try {
           await service.createTemplate(meta, actor);
+          const publishedVersion = await service.repository.getVersion(
+            meta.templateId,
+            Number(draft.templateVersion)
+          );
+          if (publishedVersion?.status === "PUBLISHED") {
+            stage = "ACTIVATE_TEMPLATE";
+            await service.updateTemplate(
+              meta.templateId,
+              {
+                enabled: body.template?.enabled !== false,
+                lifecycleStatus: "ACTIVE",
+                deletedAt: null
+              },
+              actor
+            );
+            return { ...publishService.response(publishedVersion), recovered: true };
+          }
           stage = "CREATE_VERSION";
           await service.createVersion(meta.templateId, draft, actor);
           stage = "BUILD_SIGN_VERIFY_UPLOAD";
           const result = await publishService.publish({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), actorId: actor, requestId });
           stage = "ACTIVATE_TEMPLATE";
-          await service.updateTemplate(meta.templateId, { enabled: body.template?.enabled !== false, lifecycleStatus: "ACTIVE" }, actor);
+          await service.updateTemplate(meta.templateId, { enabled: body.template?.enabled !== false, lifecycleStatus: "ACTIVE", deletedAt: null }, actor);
           return result;
         } catch (error) {
           error.stage || (error.stage = stage);
