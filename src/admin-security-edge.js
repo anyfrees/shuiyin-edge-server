@@ -288,6 +288,11 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken }) => as
       await service.require(access, { permission: 'template.disable', templateId: templateToggle[1] })
       return forwardAdmin(`/templates/${templateToggle[1]}`, 'PATCH', templateToggle[2] === 'enable' ? { enabled: true, archivedAt: null, lifecycleStatus: 'ACTIVE' } : { enabled: false, lifecycleStatus: 'DISABLED' })
     }
+    const recoverPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/recover-publish$/)
+    if (recoverPublish && method === 'POST') {
+      await service.require(access, { permission: 'template.publish', templateId: recoverPublish[1] })
+      return forwardAdmin(path, 'POST', await bodyOf(request))
+    }
     if (path === '/templates' && method === 'GET') {
       await service.require(access, { permission: 'template.read' })
       const response = await forwardAdmin('/templates', 'GET'), result = await response.json()

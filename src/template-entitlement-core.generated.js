@@ -561,6 +561,32 @@ var handle = async ({
         throw error;
       }
     }
+    const recoverPublish = path.match(
+      /^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/recover-publish$/
+    );
+    if (recoverPublish && request.method === "POST") {
+      const templateId = decodeURIComponent(recoverPublish[1]);
+      const templateVersion = Number(recoverPublish[2]);
+      const version = await service.repository.getVersion(
+        templateId,
+        templateVersion
+      );
+      if (version?.status !== "PUBLISHED")
+        throw new EntitlementError("TEMPLATE_VERSION_NOT_PUBLISHED", 409);
+      await service.updateTemplate(
+        templateId,
+        {
+          enabled: body.enabled !== false,
+          lifecycleStatus: "ACTIVE",
+          deletedAt: null
+        },
+        actor
+      );
+      return json({
+        ...publishService.response(version),
+        recovered: true
+      });
+    }
     if (path === "/admin/v1/groups" && request.method === "GET") {
       const groups = await service.repository.listGroups();
       const items = await Promise.all(groups.map(async (group) => ({ ...group, memberCount: (await service.repository.listGroupMembers(group.groupId)).filter((x) => x?.enabled !== false).length, grantCount: (await service.repository.listGroupGrants([group.groupId])).filter((x) => x?.enabled !== false).length })));
