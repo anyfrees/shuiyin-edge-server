@@ -51,9 +51,10 @@ test('Makers catch-all preserves API CORS preflight', async () => {
   assert.match(response.headers.get('access-control-allow-headers') || '', /Authorization/)
 })
 
-test('EdgeOne build copies the root multi-level route', async () => {
+test('EdgeOne build bundles the root multi-level route and runtime dependencies', async () => {
   const build = await readFile(new URL('../scripts/build-edgeone.mjs', import.meta.url), 'utf8')
   const route = await readFile(new URL('../edge-functions/[[default]].js', import.meta.url), 'utf8')
-  assert.match(build, /cp\(new URL\('\.\.\/edge-functions\/'/)
+  assert.match(build, /entryPoints: await entryPoints\(edgeFunctions\)/)
+  assert.match(build, /bundle: true/)
   assert.match(route, /handleEdgeOneRequest/)
 })
