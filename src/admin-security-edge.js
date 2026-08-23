@@ -320,7 +320,7 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     const access = await service.authenticate(request, !['GET','HEAD'].includes(method))
     if (path === '/me' && method === 'GET') return json({ ok: true, admin: { adminId: access.principal.adminId, username: access.principal.username, displayName: access.principal.displayName, roles: [...access.roles], permissions: [...access.permissions], templateScopes: [...access.templateScope], groupScopes: [...access.groupScope], superAdmin: access.superAdmin, totpEnabled: Boolean(access.principal.totpEnabled), hasPassword: Boolean(access.principal.passwordHash), sessionMethod: access.session.authMethod } })
     if (path === '/dashboard' && method === 'GET') { const sessions=(await list(kv,'session')).filter(x=>!x.revokedAt&&x.expiresAt>Date.now()&&(access.superAdmin||x.adminId===access.principal.adminId)).length,templates=(await listValues(kv,'te_tpl_')).filter(x=>!x.deletedAt).length,groups=(await listValues(kv,'te_grp_')).filter(x=>!x.deletedAt).length;return json({ok:true,counts:{sessions,templates:access.superAdmin?templates:access.templateScope.size,groups:access.superAdmin?groups:access.groupScope.size}}) }
-    if (path === '/backup/status' && method === 'GET') return json({ ok: true, available: access.superAdmin && Boolean(backupStorage), canExport: access.superAdmin && Boolean(backupStorage), canRestore: access.superAdmin && Boolean(backupStorage), schemaVersion: 1, sections: BACKUP_SECTIONS })
+    if (path === '/backup/status' && method === 'GET') return json({ ok: true, available: access.superAdmin, canExport: access.superAdmin, canRestore: access.superAdmin, packageStorage: Boolean(backupStorage), schemaVersion: 1, sections: backupStorage ? BACKUP_SECTIONS : BACKUP_SECTIONS.filter(section => section !== 'packages') })
     if (path === '/backup/export' && method === 'GET') {
       if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
       const selection=requestedBackupSections(url)
@@ -387,7 +387,16 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     if (path === '/administrators' && method === 'POST') return json({ ok: true, admin: await service.createPrincipal(access, await bodyOf(request)) }, 201)
     const adminMatch = path.match(/^\/administrators\/([^/]+)$/)
     if (adminMatch && method === 'PATCH') { await service.updatePrincipal(access, adminMatch[1], await bodyOf(request)); return json({ ok: true }) }
-    if (adminMatch && method === 'DELETE') { if (access.principal.adminId === adminMatch[1]) throw fail('SELF_DELETE_DENIED', 409); const target = await service.principal(adminMatch[1]); if (!target) throw fail('ADMIN_NOT_FOUND', 404); await service.updatePrincipal(access, adminMatch[1], { status: 'DISABLED', displayName: target.displayName, roles: [], templateScopes: [], groupScopes: [] }); return new Response(null, { status: 204 }) }
+    if (adminMatch && method === 'DELETE') {
+      await service.require(access, { permission: 'admin.manage' }); if (access.principal.adminId === adminMatch[1]) throw fail('SELF_DELETE_DENIED', 409)
+      const target = await service.principal(adminMatch[1]); if (!target) throw fail('ADMIN_NOT_FOUND', 404); if (!access.superAdmin && (target.roles || []).includes('SUPER_ADMIN')) throw fail('PRIVILEGE_AMPLIFICATION_DENIED', 403)
+      for (const passkeyId of target.passkeyIds || []) await remove(kv, 'passkey', passkeyId)
+      for (const session of await list(kv, 'session')) if (session.adminId === target.adminId) await remove(kv, 'session', session.sessionHash)
+      for (const recovery of await list(kv, 'recovery')) if (recovery.adminId === target.adminId) await remove(kv, 'recovery', recovery.codeHash)
+      for (const challenge of await list(kv, 'challenge')) if (challenge.adminId === target.adminId) await remove(kv, 'challenge', `${challenge.purpose}:${target.adminId}`)
+      await kv.delete(key('username', target.username)); await remove(kv, 'principal', target.adminId); await service.audit(access.principal.adminId, 'ADMIN_DELETE', 'admin', target.adminId)
+      return new Response(null, { status: 204 })
+    }
     if (path === '/passkeys/options' && method === 'POST') return json(await service.registrationOptions(access.principal))
     if (path === '/passkeys/verify' && method === 'POST') { const b = await bodyOf(request); await service.verifyRegistration(access.principal, b.response, b.name); return json({ ok: true }) }
     if (path === '/passkeys' && method === 'GET') { const stored = (await Promise.all((access.principal.passkeyIds || []).map(id => get(kv, 'passkey', id)))).filter(Boolean), items = await Promise.all(stored.map(async x => ({ credential_id: (await digest(x.credentialId)).slice(0,16), name: x.name, transports: x.transports, device_type: x.deviceType, backed_up: x.backedUp, created_at: x.createdAt, last_used_at: x.lastUsedAt }))); return json({ ok: true, items }) }

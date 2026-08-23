@@ -74,10 +74,19 @@ var KvTemplateEntitlementRepository = class {
     return this.read(`te_dg_${s}_${t}`);
   }
   async upsertMembership(x) {
-    const k = `te_mem_${x.subjectId}_${x.groupId}`, old = await this.read(k);
-    if (old?.enabled && !old.revokedAt) return old;
+    const k = `te_mem_${x.subjectId}_${x.groupId}`, index = `te_s_grp_${x.subjectId}_${x.groupId}`, old = await this.read(k);
+    if (old?.enabled && !old.revokedAt) {
+      await this.kv.put(index, "1");
+      return old;
+    }
     await this.write(k, x);
-    await this.kv.put(`te_s_grp_${x.subjectId}_${x.groupId}`, "1");
+    try {
+      await this.kv.put(index, "1");
+    } catch (error) {
+      await this.write(k, { ...x, enabled: false, revokedAt: Date.now(), revokedBy: "INFRASTRUCTURE_ROLLBACK" }).catch(() => {});
+      await this.kv.delete?.(index).catch(() => {});
+      throw error;
+    }
     return x;
   }
   async upsertGroupGrant(x) {
@@ -806,7 +815,7 @@ var TEMPLATE_VERSION_STATUS = Object.freeze(Object.fromEntries(VERSION_STATUSES.
 var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = [], groups = [], groupGrants = [], now = Date.now() }) => {
   const deny = (reason) => ({ allowed: false, reason, entitlementType: null, expiresAt: null }), allow = (reason, type, expiresAt = null) => ({ allowed: true, reason, entitlementType: type, expiresAt });
   if (!template || template.enabled !== true || template.visibility === "DISABLED" || template.deletedAt || template.archivedAt || template.lifecycleStatus === "FAILED" || !Number.isInteger(Number(template.latestVersion)) || Number(template.latestVersion) < 1) return deny("TEMPLATE_NOT_PUBLISHED");
-  if (!subject || subject.status !== "active") return deny("SUBJECT_DISABLED");
+  if (!subject || String(subject.status || "").toLowerCase() !== "active") return deny("SUBJECT_DISABLED");
   if (template.visibility === "PUBLIC") return allow("PUBLIC", "PUBLIC");
   if (subject.anonymous === true) return deny("NOT_ENTITLED");
   if (template.visibility === "AUTHENTICATED") return allow("AUTHENTICATED", "AUTHENTICATED");
@@ -818,7 +827,7 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
       if (!active(membership, now) || membership.subjectId !== subject.subjectId) continue;
       const group = groups.find((x) => x.groupId === membership.groupId);
       const grant = groupGrants.find((x) => x.groupId === membership.groupId && x.templateId === template.templateId);
-      if (group?.enabled === true && active(grant, now)) {
+      if (group && group.enabled !== false && active(grant, now)) {
         const expiries = [membership.expiresAt, grant.expiresAt].filter((x) => x != null).map(Number);
         groupAccess.push(expiries.length ? Math.min(...expiries) : null);
       }
