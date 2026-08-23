@@ -49,6 +49,18 @@ const timingSafe = (left, right) => {
   const a = enc.encode(String(left)), b = enc.encode(String(right)); if (a.length !== b.length) return false
   let different = 0; for (let index = 0; index < a.length; index++) different |= a[index] ^ b[index]; return different === 0
 }
+const pbkdf2Hash = async (password, encodedHash = '') => {
+  let salt, iterations = 210000, expected
+  if (encodedHash) {
+    const match = String(encodedHash).match(/^\$pbkdf2-sha256\$i=(\d+)\$([^$]+)\$([^$]+)$/)
+    if (!match) throw new Error('PBKDF2_HASH_INVALID')
+    iterations = Number(match[1]); salt = fromB64u(match[2]); expected = match[3]
+  } else { salt = new Uint8Array(16); crypto.getRandomValues(salt) }
+  const material = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits'])
+  const result = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, material, (expected ? fromB64u(expected).length : 32) * 8))
+  const encoded = b64u(result)
+  return encodedHash ? timingSafe(encoded, expected) : `$pbkdf2-sha256$i=${iterations}$${b64u(salt)}$${encoded}`
+}
 const argonHash = async (password, encodedHash = '') => {
   let salt, t = 2, m = 19456, p = 1, expected
   if (encodedHash) {
@@ -101,7 +113,7 @@ export class EdgeAdminSecurityService {
     return { principal: admin, roles: new Set(roles), permissions: permissionsFor(roles), superAdmin, templateScope: new Set(admin.templateScopes || []), groupScope: new Set(admin.groupScopes || []) }
   }
   async require(access, requirement) { if (!evaluateAdminAccess(access, requirement)) { await this.audit(access.principal.adminId, 'AUTHORIZATION_DENIED', requirement.templateId ? 'template' : requirement.groupId ? 'group' : 'permission', requirement.templateId || requirement.groupId || requirement.permission, 'DENIED', { permission: requirement.permission }); throw fail('ADMIN_SCOPE_DENIED') } return access }
-  async passwordHash(password) { return argonHash(password) }
+  async passwordHash(password) { return pbkdf2Hash(password) }
   async issueSession(admin, method) {
     const token = random(32), csrf = random(24), now = this.now(), sessionHash = await digest(token), expiresAt = now + Number(this.env.ADMIN_SESSION_MS || 8 * 60 * 60 * 1000)
     await put(this.kv, 'session', sessionHash, { sessionHash, adminId: admin.adminId, csrfHash: await digest(csrf), authMethod: method, authzEpoch: admin.authzEpoch, createdAt: now, expiresAt, revokedAt: null, lastSeenAt: now }, { expirationTtl: Math.ceil((expiresAt - now) / 1000) + 60 })
@@ -119,14 +131,14 @@ export class EdgeAdminSecurityService {
   async passwordLogin(input) {
     const admin = await this.byUsername(input.username)
     let valid = false
-    try { valid = Boolean(admin?.passwordHash) && await argonHash(String(input.password || ''), admin.passwordHash) === true } catch {}
+    try { valid = Boolean(admin?.passwordHash) && await (admin.passwordHash.startsWith('$pbkdf2-sha256$') ? pbkdf2Hash(String(input.password || ''), admin.passwordHash) : argonHash(String(input.password || ''), admin.passwordHash)) === true } catch {}
     if (!valid || admin.status !== 'ACTIVE') { await this.audit(null, 'ADMIN_LOGIN_FAILURE', '', '', 'DENIED'); throw fail('ADMIN_LOGIN_FAILED', 401) }
     if (admin.totpEnabled) { if (!String(input.totp || '').trim()) throw fail('TOTP_REQUIRED', 428); if (!await this.verifyTotp(await this.open(admin.totpSecret), input.totp)) throw fail('ADMIN_LOGIN_FAILED', 401) }
     const method = admin.totpEnabled ? 'PASSWORD_TOTP' : 'PASSWORD'; await this.audit(admin.adminId, 'ADMIN_LOGIN_SUCCESS', '', '', 'SUCCESS', { method }); return this.issueSession(admin, method)
   }
   async recoveryLogin(input) {
     const admin = await this.byUsername(input.username); let valid = false
-    try { valid = Boolean(admin?.passwordHash) && await argonHash(String(input.password || ''), admin.passwordHash) === true } catch {}
+    try { valid = Boolean(admin?.passwordHash) && await (admin.passwordHash.startsWith('$pbkdf2-sha256$') ? pbkdf2Hash(String(input.password || ''), admin.passwordHash) : argonHash(String(input.password || ''), admin.passwordHash)) === true } catch {}
     const codeHash = await digest(String(input.recoveryCode || '').toUpperCase()), code = admin && await get(this.kv, 'recovery', codeHash)
     if (!valid || !code || code.adminId !== admin.adminId || code.usedAt) throw fail('ADMIN_LOGIN_FAILED', 401)
     code.usedAt = this.now(); await put(this.kv, 'recovery', codeHash, code); await this.audit(admin.adminId, 'RECOVERY_CODE_USE', 'admin', admin.adminId); return this.issueSession(admin, 'PASSWORD_RECOVERY')

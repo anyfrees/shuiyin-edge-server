@@ -73,7 +73,7 @@ test('fresh Edge deployment uses a one-time bootstrap token and never a default 
   assert.equal(response.status, 201)
   const bootstrapAdminId = await kv.get('admin:username:admin')
   const bootstrapPrincipal = JSON.parse(await kv.get(`admin:principal:${bootstrapAdminId}`))
-  assert.match(bootstrapPrincipal.passwordHash, /m=19456,t=2,p=1/)
+  assert.match(bootstrapPrincipal.passwordHash, /^\$pbkdf2-sha256\$i=210000\$/)
   response = await invoke(handler, '/admin/v1/console/bootstrap/status')
   assert.deepEqual(await response.json(), { ok: true, initialized: true })
   response = await invoke(handler, '/admin/v1/console/bootstrap', { method: 'POST', body: { username: 'admin2', password: 'another-password-123', displayName: '管理员 2' }, headers: { 'x-bootstrap-token': env.ADMIN_BOOTSTRAP_TOKEN } })
