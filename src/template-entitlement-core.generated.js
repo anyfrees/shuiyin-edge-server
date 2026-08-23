@@ -654,12 +654,12 @@ var handle = async ({
     m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/prepare-publish$/);
     if (m && request.method === "POST") {
       if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-      return json(await publishService.prepare({ templateId: m[1], templateVersion: Number(m[2]) }));
+      return json(await publishService.prepare({ templateId: m[1], templateVersion: Number(m[2]), actorId: actor }));
     }
     m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/commit-prepared$/);
     if (m && request.method === "POST") {
       if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-      return json(await publishService.commitPrepared({ templateId: m[1], templateVersion: Number(m[2]), artifact: body.artifact, actorId: actor, requestId: request.headers.get("x-request-id") || "" }));
+      return json(await publishService.commitPrepared({ templateId: m[1], templateVersion: Number(m[2]), prepareId: body.prepareId, actorId: actor, requestId: request.headers.get("x-request-id") || "" }));
     }
     m = path.match(
       /^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/(publish|retire)$/

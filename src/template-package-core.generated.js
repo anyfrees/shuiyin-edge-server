@@ -1261,7 +1261,7 @@ var TemplatePublishService = class {
       throw error?.code ? error : fail2("TEMPLATE_PACKAGE_INVALID", 400, error);
     }
   }
-  async prepare({ templateId, templateVersion }) {
+  async prepare({ templateId, templateVersion, actorId = "admin" }) {
     const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
     if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
     if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
@@ -1280,18 +1280,27 @@ var TemplatePublishService = class {
       privateKey: key2.privateKey,
       algorithm: key2.algorithm || "Ed25519"
     });
-    return { artifact: b64(built.bytes), size: built.bytes.byteLength };
+    const encoded = b64(built.bytes), prepareId = crypto.randomUUID().replace(/-/g, ""), chunkSize = 90000, total = Math.ceil(encoded.length / chunkSize), kv = this.repository.kv;
+    if (!kv) throw fail2("PERSISTENT_STORAGE_NOT_CONFIGURED", 503);
+    await Promise.all(Array.from({ length: total }, (_, index) => kv.put(`te_prepared_${prepareId}_${index}`, encoded.slice(index * chunkSize, (index + 1) * chunkSize))));
+    await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, total, size: built.bytes.byteLength, createdAt: this.now() }));
+    return { prepareId, size: built.bytes.byteLength, total };
   }
-  async commitPrepared({ templateId, templateVersion, artifact, actorId = "admin", requestId = "" }) {
+  async commitPrepared({ templateId, templateVersion, prepareId, actorId = "admin", requestId = "" }) {
     if (!this.storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
     const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
     if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
     if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
     if (version.status === "PUBLISHED" && version.contentDigest && version.artifactSha256) return { ...this.response(version), idempotent: true };
     if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
-    const packageBytes = bytes(artifact);
-    const checked = await this.validator({ bytes: packageBytes, expectedTemplateId: templateId, expectedVersion: Number(templateVersion), rendererVersion: 2, keys: this.packageKeys });
-    const manifest = checked.manifest;
+    const kv = this.repository.kv, meta = kv && JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null");
+    if (!meta || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || meta.actorId !== actorId || this.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail2("PUBLISH_PREPARE_INVALID", 404);
+    const chunks = await Promise.all(Array.from({ length: Number(meta.total) }, (_, index) => kv.get(`te_prepared_${prepareId}_${index}`)));
+    if (chunks.some((chunk) => typeof chunk !== "string")) throw fail2("PUBLISH_PREPARE_INCOMPLETE", 409);
+    const packageBytes = bytes(chunks.join(""));
+    let manifest;
+    try { manifest = JSON.parse(dec.decode(packageBytes)).manifest; } catch { throw fail2("TEMPLATE_PACKAGE_INVALID", 400); }
+    if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion) || packageBytes.byteLength !== Number(meta.size)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
     const existing = await this.storage.getPackage(templateId, Number(templateVersion));
     if (!existing) await this.storage.putPackage(templateId, Number(templateVersion), packageBytes);
     else if (existing.byteLength !== packageBytes.byteLength) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
@@ -1320,6 +1329,7 @@ var TemplatePublishService = class {
       audit: { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: manifest.contentDigest, artifactSha256: manifest.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) },
       operation: { operationId: opId, templateId, templateVersion: Number(templateVersion), status: "COMPLETED", actorId, requestId: String(requestId).slice(0, 128), objectRef: published.internalObjectRef, createdAt: publishedAt, updatedAt: publishedAt }
     });
+    await Promise.all([kv.delete(`te_prepared_${prepareId}_meta`), ...chunks.map((_, index) => kv.delete(`te_prepared_${prepareId}_${index}`))]);
     return this.response(published);
   }
   validateTemplate(t) {
