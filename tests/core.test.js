@@ -79,6 +79,8 @@ test("admin responses preserve CORS headers, including authentication errors", a
   assert.equal(response.headers.get("access-control-allow-origin"), "https://shuiyin.nnu.cn");
   assert.equal(response.headers.get("access-control-allow-credentials"), "true");
   assert.match(response.headers.get("vary") || "", /Origin/i);
+  const preflight = await handleRequest(new Request("https://api.shuiyin.nnu.cn/admin/v1/console/bootstrap/reset", { method: "OPTIONS", headers: { Origin: "https://shuiyin.nnu.cn", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-bootstrap-token,x-bootstrap-reset" } }), env, new MemoryKv());
+  assert.match(preflight.headers.get("access-control-allow-headers") || "", /X-Bootstrap-Reset/i);
 });
 const phase8cHashes = Array.from({ length: 16 }, (_, i) =>
   i.toString(16).padStart(64, "0"),

@@ -197,7 +197,7 @@ const corsHeaders = (request, env) => {
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, X-CSRF-Token, X-Request-Id, X-Bootstrap-Token, X-Content-Sha256",
+        "Content-Type, Authorization, X-CSRF-Token, X-Request-Id, X-Bootstrap-Token, X-Bootstrap-Reset, X-Content-Sha256",
       "Access-Control-Max-Age": "86400",
       Vary: "Origin",
     });
