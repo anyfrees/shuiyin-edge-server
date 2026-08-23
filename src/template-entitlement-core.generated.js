@@ -782,6 +782,7 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
   if (!subject || String(subject.status || "").toLowerCase() !== "active") return deny("SUBJECT_DISABLED");
   if (template.visibility === "PUBLIC") return allow("PUBLIC", "PUBLIC");
   if (subject.anonymous === true) return deny("NOT_ENTITLED");
+  if (template.contributionType === "USER_SUBMISSION" && template.creatorPublicId && template.creatorPublicId === subject.publicId) return allow("CREATOR_OWNER", "CREATOR_OWNER");
   if (template.visibility === "AUTHENTICATED") return allow("AUTHENTICATED", "AUTHENTICATED");
   if (template.visibility === "INTERNAL") return subject.internal === true ? allow("INTERNAL", "INTERNAL") : deny("NOT_ENTITLED");
   if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(template.visibility)) {
@@ -991,8 +992,7 @@ var TemplateEntitlementService = class {
   }
   async detail(subject, templateId) {
     const ctx = await this.context(subject, templateId);
-    const creatorOwned = ctx.template?.contributionType === "USER_SUBMISSION" && ctx.template.creatorPublicId && ctx.template.creatorPublicId === subject.publicId;
-    if (!creatorOwned && !evaluateTemplateAccess(ctx).allowed) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
+    if (!evaluateTemplateAccess(ctx).allowed) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
     const version = await this.repository.getVersion(templateId, Number(ctx.template.latestVersion));
     return { ...publicTemplate(ctx.template), previewLayout: version?.previewLayout || null };
   }
@@ -1102,6 +1102,11 @@ var TemplateEntitlementService = class {
       }
       cursor = page.nextCursor;
     } while (cursor);
+    for (const template of await this.repository.listTemplates()) {
+      if (template?.contributionType !== "USER_SUBMISSION" || template.creatorPublicId !== subject.publicId || out.some((item) => item.templateId === template.templateId)) continue;
+      const ctx = await this.context(subject, template.templateId), access = evaluateTemplateAccess(ctx);
+      if (access.allowed) out.push({ ...publicTemplate(ctx.template), accessType: access.entitlementType, expiresAt: access.expiresAt });
+    }
     return out;
   }
   async addMember(groupId, subjectId, actor, expiresAt = null) {

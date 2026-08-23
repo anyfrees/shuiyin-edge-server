@@ -735,6 +735,7 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
   if (!subject || String(subject.status || "").toLowerCase() !== "active") return deny("SUBJECT_DISABLED");
   if (template.visibility === "PUBLIC") return allow("PUBLIC", "PUBLIC");
   if (subject.anonymous === true) return deny("NOT_ENTITLED");
+  if (template.contributionType === "USER_SUBMISSION" && template.creatorPublicId && template.creatorPublicId === subject.publicId) return allow("CREATOR_OWNER", "CREATOR_OWNER");
   if (template.visibility === "AUTHENTICATED") return allow("AUTHENTICATED", "AUTHENTICATED");
   if (template.visibility === "INTERNAL") return subject.internal === true ? allow("INTERNAL", "INTERNAL") : deny("NOT_ENTITLED");
   if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(template.visibility)) {
