@@ -75,6 +75,10 @@ test('fresh Edge deployment uses a one-time bootstrap token and never a default 
   assert.deepEqual(await response.json(), { ok: true, initialized: true })
   response = await invoke(handler, '/admin/v1/console/bootstrap', { method: 'POST', body: { username: 'admin2', password: 'another-password-123', displayName: '管理员 2' }, headers: { 'x-bootstrap-token': env.ADMIN_BOOTSTRAP_TOKEN } })
   assert.equal(response.status, 409)
+  response = await handler(new Request('https://test.shuiyin.nnu.cn/admin/v1/console/bootstrap/reset', { method: 'POST', headers: { 'content-type': 'application/json', 'x-bootstrap-token': env.ADMIN_BOOTSTRAP_TOKEN, 'x-bootstrap-reset': 'confirmed' }, body: '{}' }))
+  assert.equal(response.status, 200); assert.equal((await response.json()).reset, true)
+  response = await invoke(handler, '/admin/v1/console/bootstrap/status')
+  assert.deepEqual(await response.json(), { ok: true, initialized: false })
 })
 
 test('super admin exports and restores chunked records and template packages', async () => {

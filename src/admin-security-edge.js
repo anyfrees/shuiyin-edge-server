@@ -35,6 +35,11 @@ const listRecords = async (kv, prefix) => {
   do{const page=await kv.list({prefix,limit:100,...(cursor?{cursor}:{})});for(const item of page.keys||[]){const name=item.name||item.key,value=parse(await kv.get(name));if(value)records.push({name,value})}cursor=page.list_complete===true||page.complete===true?'':page.cursor}while(cursor)
   return records
 }
+const listNames = async (kv, prefix) => {
+  const names=[];let cursor
+  do{const page=await kv.list({prefix,limit:100,...(cursor?{cursor}:{})});names.push(...(page.keys||[]).map(item=>item.name||item.key).filter(Boolean));cursor=page.list_complete===true||page.complete===true?'':page.cursor}while(cursor)
+  return names
+}
 const countKeys = async (kv, prefix) => {
   let count=0,cursor
   do{const page=await kv.list({prefix,limit:100,...(cursor?{cursor}:{})});count+=(page.keys||[]).length;cursor=page.list_complete===true||page.complete===true?'':page.cursor}while(cursor)
@@ -233,6 +238,15 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       if ((await list(kv, 'principal')).length) throw fail('BOOTSTRAP_CLOSED', 409)
       const admin = await service.createPrincipal(null, { ...(await bodyOf(request)), roles: ['SUPER_ADMIN'], templateScopes: [], groupScopes: [] }, true)
       return json({ ok: true, admin }, 201)
+    }
+    if (path === '/bootstrap/reset' && method === 'POST') {
+      if (url.hostname !== 'test.shuiyin.nnu.cn') throw fail('BOOTSTRAP_RESET_DENIED', 403)
+      const expected = String(env.ADMIN_BOOTSTRAP_TOKEN || ''), supplied = String(request.headers.get('x-bootstrap-token') || '')
+      if (!expected || !timingSafe(supplied, expected) || request.headers.get('x-bootstrap-reset') !== 'confirmed') throw fail('BOOTSTRAP_RESET_DENIED', 403)
+      const prefixes = ['admin:principal:', 'admin:username:', 'admin:passkey:', 'admin:recovery:', 'admin:session:', 'admin:challenge:', 'admin:registration:']
+      let deleted = 0
+      for (const prefix of prefixes) for (const name of await listNames(kv, prefix)) { await kv.delete(name); deleted++ }
+      return json({ ok: true, reset: true, deleted })
     }
     if (path === '/migration/import' && method === 'POST') {
       if (!env.ADMIN_MIGRATION_TOKEN) throw fail('MIGRATION_DISABLED', 404)
