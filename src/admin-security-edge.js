@@ -399,7 +399,7 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     if (uploadChunk && method === 'POST') {
       const input = await bodyOf(request), index = Number(uploadChunk[2]), total = Number(input.total)
       const targetPath = String(input.targetPath || '')
-      const target = targetPath.match(/^\/templates\/([^/]+)\/versions$/)
+      const target = targetPath.match(/^\/templates\/([^/]+)\/versions(?:\/\d+\/commit-prepared)?$/)
       const atomic = targetPath === '/templates/atomic-publish'
       if ((!target && !atomic) || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || index >= total || total < 1 || total > 64 || typeof input.chunk !== 'string' || input.chunk.length > 128000) throw fail('INVALID_UPLOAD_CHUNK', 400)
       await service.require(access, { permission: 'template.publish', ...(target ? { templateId: decodeURIComponent(target[1]) } : {}) })
@@ -433,10 +433,11 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       waitUntil((async () => {
         try {
           const response = await forwardAdmin(`/templates/${encodeURIComponent(templateId)}/versions/${templateVersion}/publish`, 'POST', {})
-          const result = await response.clone().json().catch(() => ({}))
+          const result = /** @type {any} */ (await response.clone().json().catch(() => ({})))
           await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: response.ok ? 'SUCCEEDED' : 'FAILED', code: response.ok ? null : result.code || `HTTP_${response.status}`, completedAt: Date.now() }))
         } catch (error) {
-          await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: 'FAILED', code: error?.code || 'PUBLISH_JOB_FAILED', completedAt: Date.now() }))
+          const errorCode = /** @type {any} */ (error)?.code || 'PUBLISH_JOB_FAILED'
+          await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: 'FAILED', code: errorCode, completedAt: Date.now() }))
         }
       })())
       return json({ ok: true, jobId, status: 'PENDING' }, 202)
@@ -467,6 +468,11 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     const recoverPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/recover-publish$/)
     if (recoverPublish && method === 'POST') {
       await service.require(access, { permission: 'template.publish', templateId: recoverPublish[1] })
+      return forwardAdmin(path, 'POST', await bodyOf(request))
+    }
+    const stagedPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/(prepare-publish|commit-prepared)$/)
+    if (stagedPublish && method === 'POST') {
+      await service.require(access, { permission: 'template.publish', templateId: decodeURIComponent(stagedPublish[1]) })
       return forwardAdmin(path, 'POST', await bodyOf(request))
     }
     const staleVersion = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/stale$/)

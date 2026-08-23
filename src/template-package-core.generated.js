@@ -1261,6 +1261,67 @@ var TemplatePublishService = class {
       throw error?.code ? error : fail2("TEMPLATE_PACKAGE_INVALID", 400, error);
     }
   }
+  async prepare({ templateId, templateVersion }) {
+    const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
+    if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
+    if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
+    if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
+    this.validateTemplate(template);
+    const key2 = this.activeKey(), draft = version.draft || {};
+    const built = await this.builder({
+      templateId,
+      templateVersion: Number(templateVersion),
+      name: template.name,
+      description: template.description,
+      layout: draft.layout,
+      assets: (draft.assets || []).map((a) => ({ ...a, bytes: bytes(a.bytes ?? a.data) })),
+      createdAt: version.createdAt || 0,
+      keyId: key2.keyId,
+      privateKey: key2.privateKey,
+      algorithm: key2.algorithm || "Ed25519"
+    });
+    return { artifact: b64(built.bytes), size: built.bytes.byteLength };
+  }
+  async commitPrepared({ templateId, templateVersion, artifact, actorId = "admin", requestId = "" }) {
+    if (!this.storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
+    const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
+    if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
+    if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
+    if (version.status === "PUBLISHED" && version.contentDigest && version.artifactSha256) return { ...this.response(version), idempotent: true };
+    if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
+    const packageBytes = bytes(artifact);
+    const checked = await this.validator({ bytes: packageBytes, expectedTemplateId: templateId, expectedVersion: Number(templateVersion), rendererVersion: 2, keys: this.packageKeys });
+    const manifest = checked.manifest;
+    const existing = await this.storage.getPackage(templateId, Number(templateVersion));
+    if (!existing) await this.storage.putPackage(templateId, Number(templateVersion), packageBytes);
+    else if (existing.byteLength !== packageBytes.byteLength) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
+    const publishedAt = this.now(), draft = version.draft || {}, opId = this.operationId();
+    const published = {
+      ...version,
+      status: "PUBLISHED",
+      previewLayout: structuredClone(draft.layout),
+      contentDigest: manifest.contentDigest,
+      artifactSha256: manifest.artifactSha256,
+      packageSha256: manifest.artifactSha256,
+      packageSize: packageBytes.byteLength,
+      signature: manifest.signature.value,
+      packageSignature: manifest.signature.value,
+      signatureKeyId: manifest.signature.keyId,
+      signatureAlgorithm: manifest.signature.algorithm,
+      packageKeyId: manifest.signature.keyId,
+      internalObjectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`,
+      publishedAt,
+      publishedBy: actorId,
+      draft: void 0
+    };
+    await this.repository.commitPublished({
+      version: published,
+      template: { ...template, latestVersion: Math.max(Number(template.latestVersion) || 0, Number(templateVersion)), updatedAt: publishedAt, publishedAt },
+      audit: { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: manifest.contentDigest, artifactSha256: manifest.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) },
+      operation: { operationId: opId, templateId, templateVersion: Number(templateVersion), status: "COMPLETED", actorId, requestId: String(requestId).slice(0, 128), objectRef: published.internalObjectRef, createdAt: publishedAt, updatedAt: publishedAt }
+    });
+    return this.response(published);
+  }
   validateTemplate(t) {
     if (!t || !/^tpl_[a-z0-9_-]{3,80}$/.test(t.templateId) || !String(t.name || "").trim() || ![
       "PUBLIC",

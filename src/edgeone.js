@@ -43,7 +43,7 @@ export const edgeOneEnvironment = (env = {}, bindings = globalThis) => {
 
 export const handleEdgeOneRequest = ({ request, env = {}, waitUntil }) => {
   const bindings = /** @type {any} */ (globalThis)
-  const runtimeEnv = edgeOneEnvironment(env, bindings)
+  const runtimeEnv = /** @type {any} */ (edgeOneEnvironment(env, bindings))
   runtimeEnv.EDGE_WAIT_UNTIL = typeof waitUntil === 'function' ? waitUntil : null
   const kv = makersKv(runtimeBinding(env, bindings, 'PROVENANCE_KV'))
   return handleRequest(request, runtimeEnv, kv)
