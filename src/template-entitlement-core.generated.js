@@ -811,14 +811,21 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
   if (subject.anonymous === true) return deny("NOT_ENTITLED");
   if (template.visibility === "AUTHENTICATED") return allow("AUTHENTICATED", "AUTHENTICATED");
   if (template.visibility === "INTERNAL") return subject.internal === true ? allow("INTERNAL", "INTERNAL") : deny("NOT_ENTITLED");
-  if (template.visibility === "USER_RESTRICTED") return active(directGrant, now) ? allow("DIRECT_GRANT", "USER_RESTRICTED", directGrant.expiresAt ?? null) : deny("NOT_ENTITLED");
-  if (template.visibility === "GROUP_RESTRICTED") for (const membership of memberships) {
-    if (!active(membership, now) || membership.subjectId !== subject.subjectId) continue;
-    const group = groups.find((x) => x.groupId === membership.groupId);
-    const grant = groupGrants.find((x) => x.groupId === membership.groupId && x.templateId === template.templateId);
-    if (group?.enabled === true && active(grant, now)) {
-      const expiries = [membership.expiresAt, grant.expiresAt].filter((x) => x != null);
-      return allow("GROUP_GRANT", "GROUP_RESTRICTED", expiries.length ? Math.min(...expiries) : null);
+  if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(template.visibility)) {
+    if (active(directGrant, now)) return allow("DIRECT_GRANT", "USER_RESTRICTED", directGrant.expiresAt ?? null);
+    const groupAccess = [];
+    for (const membership of memberships) {
+      if (!active(membership, now) || membership.subjectId !== subject.subjectId) continue;
+      const group = groups.find((x) => x.groupId === membership.groupId);
+      const grant = groupGrants.find((x) => x.groupId === membership.groupId && x.templateId === template.templateId);
+      if (group?.enabled === true && active(grant, now)) {
+        const expiries = [membership.expiresAt, grant.expiresAt].filter((x) => x != null).map(Number);
+        groupAccess.push(expiries.length ? Math.min(...expiries) : null);
+      }
+    }
+    if (groupAccess.length) {
+      const expiresAt = groupAccess.includes(null) ? null : Math.max(...groupAccess);
+      return allow("GROUP_GRANT", "GROUP_RESTRICTED", expiresAt);
     }
   }
   return deny("NOT_ENTITLED");
