@@ -1,5 +1,5 @@
 // @ts-nocheck -- generated from shared template-package-core
-import { sha512 as nobleSha512 } from "@noble/hashes/sha2.js";
+import { sha256 as nobleSha256, sha512 as nobleSha512 } from "@noble/hashes/sha2.js";
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
 var __publicField = (obj, key2, value) => __defNormalProp(obj, typeof key2 !== "symbol" ? key2 + "" : key2, value);
@@ -1293,6 +1293,9 @@ var TemplatePublishService = class {
     const content = { layout: { path: "layout.json", sha256: await sha(layoutBytes), size: layoutBytes.length }, assets: entries }, contentDigest = await sha(canonical(content));
     const manifest = { format: "jilu-template", formatVersion: 2, templateId, templateVersion: Number(templateVersion), name: template.name, description: template.description, layout: content.layout, assets: entries, rendererCompatibility: { minimumRendererVersion: 2 }, createdAt: version.createdAt || 0, contentDigest, artifactSha256: null, signature: { algorithm: key2.algorithm || "Ed25519", keyId: key2.keyId, value: "" } };
     manifest.signature.value = b64(await signDetached(manifest.signature.algorithm, signaturePayload(manifest), key2.privateKey));
+    const artifactHasher = nobleSha256.create();
+    for (const part of packageParts(draft, manifest)) artifactHasher.update(enc2.encode(part));
+    manifest.artifactSha256 = hex(artifactHasher.digest());
     const prepareId = crypto.randomUUID().replace(/-/g, ""), kv = this.repository.kv;
     if (!kv) throw fail2("PERSISTENT_STORAGE_NOT_CONFIGURED", 503);
     await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, manifest, createdAt: this.now() }));
@@ -1307,24 +1310,16 @@ var TemplatePublishService = class {
     if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
     const kv = this.repository.kv, meta = kv && JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null");
     if (!meta || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || meta.actorId !== actorId || this.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail2("PUBLISH_PREPARE_INVALID", 404);
-    const manifest = meta.manifest, draft = version.draft || {}, layoutBytes = enc2.encode(canonical(draft.layout)), files = { "layout.json": b64(layoutBytes) };
-    for (const asset of draft.assets || []) {
-      const source = asset.bytes ?? asset.data;
-      files[asset.path] = typeof source === "string" ? source.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : b64(bytes(source));
-    }
-    manifest.artifactSha256 = null;
-    const unsignedArtifact = enc2.encode(canonical({ manifest, files }));
-    manifest.artifactSha256 = await sha(unsignedArtifact);
-    const packageJson = canonical({ manifest, files }), packageBytes = enc2.encode(packageJson);
+    const manifest = meta.manifest, draft = version.draft || {}, parts = packageParts(draft, manifest), characterLength = parts.reduce((sum, part) => sum + part.length, 0), packageSize = parts.reduce((sum, part) => sum + enc2.encode(part).byteLength, 0);
     if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
-    const encoded = packageJson, chunkSize = 80000, total = Math.ceil(encoded.length / chunkSize), index = Number(chunkIndex);
+    const chunkSize = 80000, total = Math.ceil(characterLength / chunkSize), index = Number(chunkIndex);
     if (!Number.isInteger(index) || index < 0 || index > total) throw fail2("PUBLISH_CHUNK_INVALID", 400);
     if (index < total) {
-      await kv.put(`te_pkg_${templateId}_${templateVersion}_${index}`, encoded.slice(index * chunkSize, (index + 1) * chunkSize));
-      await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ ...meta, manifest, total, size: packageBytes.byteLength, nextIndex: index + 1 }));
+      await kv.put(`te_pkg_${templateId}_${templateVersion}_${index}`, sliceParts(parts, index * chunkSize, chunkSize));
+      await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ ...meta, manifest, total, size: packageSize, nextIndex: index + 1 }));
       return { ok: true, prepared: true, nextIndex: index + 1, total };
     }
-    await kv.put(`te_pkg_${templateId}_${templateVersion}_meta`, JSON.stringify({ objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`, total, size: packageBytes.byteLength, encoding: "utf8", createdAt: this.now() }));
+    await kv.put(`te_pkg_${templateId}_${templateVersion}_meta`, JSON.stringify({ objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`, total, size: packageSize, encoding: "utf8", createdAt: this.now() }));
     const publishedAt = this.now(), opId = this.operationId();
     const published = {
       ...version,
@@ -1333,7 +1328,7 @@ var TemplatePublishService = class {
       contentDigest: manifest.contentDigest,
       artifactSha256: manifest.artifactSha256,
       packageSha256: manifest.artifactSha256,
-      packageSize: packageBytes.byteLength,
+      packageSize,
       signature: manifest.signature.value,
       packageSignature: manifest.signature.value,
       signatureKeyId: manifest.signature.keyId,
@@ -1482,6 +1477,25 @@ var unb64 = (s) => Uint8Array.from(
   (c) => c.charCodeAt(0)
 );
 var canonical = (v) => v === null || typeof v !== "object" ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map((x) => x === void 0 ? "null" : canonical(x)).join(",")}]` : `{${Object.keys(v).filter((k) => v[k] !== void 0).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+var packageParts = (draft, manifest) => {
+  const values = { "layout.json": b64(enc2.encode(canonical(draft.layout))) };
+  for (const asset of draft.assets || []) {
+    const source = asset.bytes ?? asset.data;
+    values[asset.path] = typeof source === "string" ? source.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : b64(bytes(source));
+  }
+  const entries = Object.keys(values).sort().map((path, index) => `${index ? "," : ""}${JSON.stringify(path)}:${JSON.stringify(values[path])}`);
+  return ["{\"files\":{", ...entries, "},\"manifest\":", canonical(manifest), "}"];
+};
+var sliceParts = (parts, start, length) => {
+  let offset = 0, out = "";
+  for (const part of parts) {
+    const end = offset + part.length;
+    if (end > start && offset < start + length) out += part.slice(Math.max(0, start - offset), Math.min(part.length, start + length - offset));
+    offset = end;
+    if (offset >= start + length) break;
+  }
+  return out;
+};
 var sha = async (b) => hex(
   new Uint8Array(
     await crypto.subtle.digest(
