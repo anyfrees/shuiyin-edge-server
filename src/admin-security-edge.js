@@ -506,7 +506,10 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
         try {
           const raw = await backupStorage?.getPackage(item.templateId, Number(item.latestVersion || 0))
           const bundle = raw && JSON.parse(dec.decode(raw))
-          preview ||= bundle?.manifest?.layout || null
+          const layoutPath = bundle?.manifest?.layout?.path || 'layout.json'
+          const encodedLayout = bundle?.files?.[layoutPath]
+          if (encodedLayout) preview ||= JSON.parse(dec.decode(fromB64u(encodedLayout)))
+          else if (bundle?.manifest?.layout && !bundle.manifest.layout.path) preview ||= bundle.manifest.layout
           const asset = (bundle?.manifest?.assets || []).find(value => String(value.mimeType || '').startsWith('image/') && bundle.files?.[value.path])
           if (asset) {
             const encoded = String(bundle.files[asset.path]).replace(/-/g, '+').replace(/_/g, '/')

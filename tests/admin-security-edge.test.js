@@ -121,7 +121,8 @@ test('admin template listing restores package previews and large mutations are b
     async getPackage(id, version) { return objects.get(this.objectRef(id, version)) || null },
   }
   const previewBytes = new Uint8Array([1, 2, 3, 4])
-  const bundle = { manifest: { layout: { canvas: { width: 320, height: 180 } }, assets: [{ path: 'assets/preview.png', mimeType: 'image/png' }] }, files: { 'assets/preview.png': Buffer.from(previewBytes).toString('base64url') } }
+  const previewLayout = { canvasWidth: 320, canvasHeight: 180, fields: [{ fieldId: 'field_title', sample: '现场记录' }] }
+  const bundle = { manifest: { layout: { path: 'layout.json', sha256: 'layout-hash', size: 120 }, assets: [{ path: 'assets/preview.png', mimeType: 'image/png' }] }, files: { 'layout.json': Buffer.from(JSON.stringify(previewLayout)).toString('base64url'), 'assets/preview.png': Buffer.from(previewBytes).toString('base64url') } }
   objects.set(storage.objectRef('tpl_preview', 1), new TextEncoder().encode(JSON.stringify(bundle)))
   let forwardedBody = null
   const forward = async request => {
@@ -135,7 +136,7 @@ test('admin template listing restores package previews and large mutations are b
   const login = await response.json(), cookie = response.headers.get('set-cookie').split(';')[0], auth = { cookie, 'x-csrf-token': login.csrfToken }
   response = await invoke(handler, '/admin/v1/console/templates', { headers: { cookie } })
   const item = (await response.json()).items[0]
-  assert.deepEqual(item.preview, bundle.manifest.layout)
+  assert.deepEqual(item.preview, previewLayout)
   assert.equal(item.previewImage, 'data:image/png;base64,AQIDBA==')
   const large = { templateVersion: 2, draft: { assets: [{ data: 'a'.repeat(800_000) }] } }
   response = await invoke(handler, '/admin/v1/console/templates/tpl_preview/versions', { method: 'POST', body: large, headers: auth })
