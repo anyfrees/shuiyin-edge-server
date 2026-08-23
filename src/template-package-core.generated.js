@@ -1,4 +1,5 @@
 // @ts-nocheck -- generated from shared template-package-core
+import { sha512 as nobleSha512 } from "@noble/hashes/sha2.js";
 var __defProp = Object.defineProperty;
 var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
 var __publicField = (obj, key2, value) => __defNormalProp(obj, typeof key2 !== "symbol" ? key2 + "" : key2, value);
@@ -444,11 +445,7 @@ var _verify = (sig, msg, publicKey, options = defaultVerifyOpts) => {
 };
 var verifyAsync = async (signature, message, publicKey, opts = defaultVerifyOpts) => hashFinishA(_verify(signature, message, publicKey, opts));
 var hashes = {
-  sha512Async: async (message) => {
-    const s = subtle();
-    const m = concatBytes(message);
-    return u8n(await s.digest("SHA-512", m.buffer));
-  },
+  sha512Async: async (message) => nobleSha512(concatBytes(message)),
   sha512: void 0
 };
 var W = 8;
