@@ -521,23 +521,29 @@ var handle = async ({
               meta.templateId,
               Number(draft.templateVersion)
             );
-            if (existingVersion?.status !== "PUBLISHED") throw error;
-            stage = "ACTIVATE_TEMPLATE";
-            await service.updateTemplate(
-              meta.templateId,
-              {
-                enabled: body.template?.enabled !== false,
-                lifecycleStatus: "ACTIVE",
-                deletedAt: null,
-                latestVersion: Number(draft.templateVersion),
-                publishedAt: Number(existingVersion.publishedAt) || Date.now()
-              },
-              actor
-            );
-            return {
-              ...publishService.response(existingVersion),
-              recovered: true
-            };
+            if (existingVersion?.status === "PUBLISHED") {
+              stage = "ACTIVATE_TEMPLATE";
+              await service.updateTemplate(
+                meta.templateId,
+                {
+                  enabled: body.template?.enabled !== false,
+                  lifecycleStatus: "ACTIVE",
+                  deletedAt: null,
+                  latestVersion: Number(draft.templateVersion),
+                  publishedAt: Number(existingVersion.publishedAt) || Date.now()
+                },
+                actor
+              );
+              return {
+                ...publishService.response(existingVersion),
+                recovered: true
+              };
+            }
+            // A client disconnect can leave the version draft persisted before
+            // package publication finishes. Re-enter the idempotent publisher
+            // for that exact draft instead of making the version permanently
+            // unusable with TEMPLATE_VERSION_CONFLICT.
+            if (existingVersion?.status !== "DRAFT") throw error;
           }
           stage = "BUILD_SIGN_VERIFY_UPLOAD";
           const result = await publishService.publish({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), actorId: actor, requestId });
