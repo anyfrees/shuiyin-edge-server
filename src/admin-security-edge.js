@@ -410,6 +410,19 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await service.require(access, { permission: 'template.publish', templateId: recoverPublish[1] })
       return forwardAdmin(path, 'POST', await bodyOf(request))
     }
+    const staleVersion = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/stale$/)
+    if (staleVersion && method === 'DELETE') {
+      const templateId = decodeURIComponent(staleVersion[1]), templateVersion = Number(staleVersion[2])
+      await service.require(access, { permission: 'template.publish', templateId })
+      const template = parse(await kv.get(`te_tpl_${templateId}`))
+      const version = parse(await kv.get(`te_ver_${templateId}_${templateVersion}`))
+      if (!template || !version) throw fail('TEMPLATE_VERSION_NOT_FOUND', 404)
+      if (Number(template.latestVersion || 0) >= templateVersion) throw fail('TEMPLATE_VERSION_DELETE_UNSAFE', 409)
+      await kv.delete(`te_ver_${templateId}_${templateVersion}`)
+      await backupStorage?.deletePackage?.(templateId, templateVersion)
+      await service.audit(access.principal.adminId, 'TEMPLATE_STALE_VERSION_DELETE', 'template', `${templateId}:v${templateVersion}`)
+      return new Response(null, { status: 204 })
+    }
     if (path === '/templates' && method === 'GET') {
       await service.require(access, { permission: 'template.read' })
       const response = await forwardAdmin('/templates', 'GET'), result = await response.json()
