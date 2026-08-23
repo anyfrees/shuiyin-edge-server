@@ -636,8 +636,13 @@ var EdgeOneBlobTemplateStorage = class extends Contract {
         if (chunks.every((chunk) => typeof chunk === "string")) return meta.encoding === "utf8" ? enc2.encode(chunks.join("")) : unb64(chunks.join(""));
       }
     }
-    const x = await this.store.get(this.objectRef(id, v), { consistency: "strong" });
-    return x ? new Uint8Array(await x.arrayBuffer?.() || x) : null;
+    try {
+      const x = await this.store.get(this.objectRef(id, v), { consistency: "strong" });
+      return x ? new Uint8Array(await x.arrayBuffer?.() || x) : null;
+    } catch (error) {
+      if (this.kv) return null;
+      throw error;
+    }
   }
   async putPreview(id, v, b) {
     await this.store.set(key(id, v, "preview.webp"), b);
@@ -651,27 +656,59 @@ var EdgeOneBlobTemplateStorage = class extends Contract {
       const meta = JSON.parse(await this.kv.get(`te_pkg_${id}_${v}_meta`) || "null");
       if (meta) await Promise.all([this.kv.delete(`te_pkg_${id}_${v}_meta`), ...Array.from({ length: Number(meta.total) }, (_, index) => this.kv.delete(`te_pkg_${id}_${v}_${index}`))]);
     }
-    return this.store.delete(this.objectRef(id, v));
+    try {
+      return await this.store.delete(this.objectRef(id, v));
+    } catch (error) {
+      if (!this.kv) throw error;
+    }
   }
   async exists(id, v) {
-    return Boolean(await this.store.get(this.objectRef(id, v), { consistency: "strong" }));
+    return Boolean(await this.getPackage(id, v));
   }
   async getMetadata(id, v) {
-    const x = await this.store.getWithHeaders?.(this.objectRef(id, v), { consistency: "strong" });
-    if (x) return x;
+    if (this.kv) {
+      const meta = JSON.parse(await this.kv.get(`te_pkg_${id}_${v}_meta`) || "null");
+      if (meta) return { size: Number(meta.size) || 0, objectRef: meta.objectRef || this.objectRef(id, v) };
+    }
+    try {
+      const x = await this.store.getWithHeaders?.(this.objectRef(id, v), { consistency: "strong" });
+      if (x) return x;
+    } catch (error) {
+      if (!this.kv) throw error;
+    }
     const b = await this.getPackage(id, v);
     return b ? { size: b.byteLength } : null;
   }
   async listPackages() {
-    if (typeof this.store.list !== "function") throw failure("CAPABILITY_NOT_SUPPORTED");
-    const out = [];
+    const found = /* @__PURE__ */ new Map();
+    if (this.kv) {
+      let kvCursor;
+      do {
+        const page = await this.kv.list({ prefix: "te_pkg_", ...kvCursor ? { cursor: kvCursor } : {} });
+        for (const item of page.keys || []) {
+          const name = item.name || item.key || "", match = name.match(/^te_pkg_(tpl_[a-z0-9_-]{3,80})_(\d+)_meta$/);
+          if (!match) continue;
+          const meta = JSON.parse(await this.kv.get(name) || "null"), objectRef = meta?.objectRef || this.objectRef(match[1], Number(match[2]));
+          found.set(objectRef, { objectRef, safeId: objectRef, size: Number(meta?.size) || 0, createdAt: Number(meta?.createdAt) || 0 });
+        }
+        kvCursor = page.list_complete === true || page.complete === true ? null : page.cursor;
+      } while (kvCursor);
+    }
+    if (typeof this.store.list !== "function") return [...found.values()];
     let cursor;
-    do {
-      const page = await this.store.list({ prefix: "templates/", ...cursor ? { cursor } : {} }), items = page.blobs || page.objects || page.items || [];
-      out.push(...items.filter((x) => (x.key || x.name).endsWith("/package.jltpkg")).map((x) => ({ objectRef: x.key || x.name, safeId: x.key || x.name, size: x.size, createdAt: new Date(x.uploadedAt || x.uploaded || x.createdAt || 0).getTime() })));
-      cursor = page.hasMore || page.truncated ? page.cursor : null;
-    } while (cursor);
-    return out;
+    try {
+      do {
+        const page = await this.store.list({ prefix: "templates/", ...cursor ? { cursor } : {} }), items = page.blobs || page.objects || page.items || [];
+        for (const x of items.filter((value) => (value.key || value.name).endsWith("/package.jltpkg"))) {
+          const objectRef = x.key || x.name;
+          if (!found.has(objectRef)) found.set(objectRef, { objectRef, safeId: objectRef, size: x.size, createdAt: new Date(x.uploadedAt || x.uploaded || x.createdAt || 0).getTime() });
+        }
+        cursor = page.hasMore || page.truncated ? page.cursor : null;
+      } while (cursor);
+    } catch (error) {
+      if (!this.kv) throw error;
+    }
+    return [...found.values()];
   }
 };
 var AlibabaEsaTemplateStorage = class {
