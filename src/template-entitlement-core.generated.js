@@ -514,6 +514,19 @@ var handle = async ({
             return { ...publishService.response(publishedVersion), recovered: true };
           }
           stage = "CREATE_VERSION";
+          const staleVersion = await service.repository.getVersion(
+            meta.templateId,
+            Number(draft.templateVersion)
+          );
+          if (staleVersion?.status === "FAILED" && staleVersion.deletedAt) {
+            // A failed atomic attempt may have uploaded an immutable package
+            // before its version record was marked failed. Remove only that
+            // orphaned package so the same version can be retried safely.
+            await publishService.storage?.deletePackage?.(
+              meta.templateId,
+              Number(draft.templateVersion)
+            );
+          }
           try {
             await service.createVersion(meta.templateId, draft, actor);
           } catch (error) {
