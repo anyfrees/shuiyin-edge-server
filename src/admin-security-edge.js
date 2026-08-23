@@ -395,6 +395,34 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       const url = new URL(request.url); url.pathname = `/admin/v1/console${targetPath}`
       return forward(new Request(url, { method: targetMethod, headers, ...(payload === undefined || ['GET','HEAD','DELETE'].includes(targetMethod) ? {} : { body: JSON.stringify(payload) }) }))
     }
+    const uploadChunk = path.match(/^\/uploads\/([a-zA-Z0-9_-]{8,128})\/chunks\/(\d+)$/)
+    if (uploadChunk && method === 'POST') {
+      const input = await bodyOf(request), index = Number(uploadChunk[2]), total = Number(input.total)
+      const targetPath = String(input.targetPath || '')
+      const target = targetPath.match(/^\/templates\/([^/]+)\/versions$/)
+      const atomic = targetPath === '/templates/atomic-publish'
+      if ((!target && !atomic) || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || index >= total || total < 1 || total > 64 || typeof input.chunk !== 'string' || input.chunk.length > 128000) throw fail('INVALID_UPLOAD_CHUNK', 400)
+      await service.require(access, { permission: 'template.publish', ...(target ? { templateId: decodeURIComponent(target[1]) } : {}) })
+      await kv.put(`admin_upload_${uploadChunk[1]}_meta`, JSON.stringify({ targetPath, total, adminId: access.principal.adminId, createdAt: Date.now() }))
+      await kv.put(`admin_upload_${uploadChunk[1]}_${index}`, input.chunk)
+      return json({ ok: true, index, total })
+    }
+    const uploadCommit = path.match(/^\/uploads\/([a-zA-Z0-9_-]{8,128})\/commit$/)
+    if (uploadCommit && method === 'POST') {
+      const prefix = `admin_upload_${uploadCommit[1]}`, meta = parse(await kv.get(`${prefix}_meta`))
+      if (!meta || meta.adminId !== access.principal.adminId || Date.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail('UPLOAD_SESSION_INVALID', 404)
+      const target = String(meta.targetPath).match(/^\/templates\/([^/]+)\/versions$/)
+      await service.require(access, { permission: 'template.publish', ...(target ? { templateId: decodeURIComponent(target[1]) } : {}) })
+      const chunks = await Promise.all(Array.from({ length: Number(meta.total) }, (_, index) => kv.get(`${prefix}_${index}`)))
+      if (chunks.some(chunk => typeof chunk !== 'string')) throw fail('UPLOAD_CHUNK_MISSING', 409)
+      let payload
+      try { payload = JSON.parse(chunks.join('')) } catch { throw fail('INVALID_JSON', 400) }
+      const response = await forwardAdmin(meta.targetPath, 'POST', payload)
+      if (response.ok) {
+        await Promise.all([kv.delete(`${prefix}_meta`), ...chunks.map((_, index) => kv.delete(`${prefix}_${index}`))])
+      }
+      return response
+    }
     const subjectForPublicId = async publicId => {
       const normalized = decodeURIComponent(publicId).toUpperCase(), subjectId = await kv.get(`public_${normalized}`), subject = subjectId && parse(await kv.get(`subject_${subjectId}`))
       if (!subject) throw fail('SUBJECT_NOT_FOUND', 404)
