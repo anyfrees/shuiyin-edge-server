@@ -255,6 +255,9 @@ const packageIdentity = objectRef => {
   return match ? { templateId: match[1], templateVersion: Number(match[2]) } : null
 }
 const byteDigest = async value => b64u(new Uint8Array(await crypto.subtle.digest('SHA-256', value)))
+const BACKUP_SECTIONS = ['administrators','users','templates','groups','entitlements','audit','packages']
+const backupRecordSection = name => name.startsWith('admin:audit:')||name.startsWith('te_audit_')?'audit':name.startsWith('admin:')?'administrators':name.startsWith('subject_')||name.startsWith('public_')||name.startsWith('id_')||name.startsWith('subject-meta_')?'users':name.startsWith('te_tpl_')||name.startsWith('te_ver_')||name.startsWith('te_idx_')?'templates':name.startsWith('te_grp_')||name.startsWith('te_mem_')||name.startsWith('te_s_grp_')?'groups':name.startsWith('te_dg_')||name.startsWith('te_gg_')||name.startsWith('te_s_tpl_')||name.startsWith('te_g_tpl_')||name.startsWith('te_epoch_')?'entitlements':null
+const requestedBackupSections = url => { const supplied=String(url.searchParams.get('sections')||'').split(',').map(x=>x.trim()).filter(Boolean);if(supplied.some(x=>!BACKUP_SECTIONS.includes(x)))throw fail('BACKUP_SELECTION_INVALID',400);return new Set(supplied.length?supplied:BACKUP_SECTIONS) }
 
 export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupStorage, waitUntil }) => async request => {
   const service = new EdgeAdminSecurityService({ kv, env }), url = new URL(request.url), path = url.pathname.replace(/^\/admin\/v1\/console/, ''), method = request.method
@@ -303,7 +306,12 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await Promise.all([put(kv, 'migration', payload.migrationId, completed), put(kv, 'migration', 'active', completed)])
       return json({ ok: true, ...completed }, 201)
     }
-    if (path === '/auth/password' && method === 'POST') { const session = await service.passwordLogin(await bodyOf(request)); return json({ ok: true, csrfToken: session.csrf, expiresAt: session.expiresAt, method: session.method }, 200, { 'Set-Cookie': sessionCookie(session, env.ENVIRONMENT !== 'test') }) }
+    if (path === '/auth/password' && method === 'POST') {
+      const input=await bodyOf(request),ip=request.headers.get('cf-connecting-ip')||request.headers.get('x-forwarded-for')||'local',guardId=await digest(`${clean(input.username,80).toLowerCase()}|${ip}`),guardKey=key('login-guard',guardId),now=Date.now(),guard=parse(await kv.get(guardKey));
+      if(guard?.lockedUntil>now){const retryAfter=Math.ceil((guard.lockedUntil-now)/1000);return json({ok:false,code:'ADMIN_LOGIN_RATE_LIMITED',retryAfter},429,{'Retry-After':String(retryAfter)})}
+      try { const session = await service.passwordLogin(input);await kv.delete(guardKey);return json({ ok: true, csrfToken: session.csrf, expiresAt: session.expiresAt, method: session.method }, 200, { 'Set-Cookie': sessionCookie(session, env.ENVIRONMENT !== 'test') }) }
+      catch(error){const code=error instanceof Error&&'code'in error?String(error.code):'';if(code==='ADMIN_LOGIN_FAILED'){const fresh=!guard||now-Number(guard.firstFailure||0)>15*60_000,state=fresh?{count:1,firstFailure:now,lockedUntil:0}:{...guard,count:Number(guard.count||0)+1};if(state.count>=5)state.lockedUntil=now+Math.min(60*60_000,15*60_000*2**Math.floor((state.count-5)/5));await kv.put(guardKey,JSON.stringify(state),{expirationTtl:Math.max(960,Math.ceil(((state.lockedUntil||now+15*60_000)-now)/1000)+60)})}throw error}
+    }
     if (path === '/auth/recovery' && method === 'POST') { const session = await service.recoveryLogin(await bodyOf(request)); return json({ ok: true, csrfToken: session.csrf, expiresAt: session.expiresAt, method: session.method }, 200, { 'Set-Cookie': sessionCookie(session, env.ENVIRONMENT !== 'test') }) }
     if (path === '/auth/passkey/options' && method === 'POST') return json(await service.authOptions((await bodyOf(request)).username))
     if (path === '/auth/passkey/verify' && method === 'POST') { const session = await service.verifyAuthentication(await bodyOf(request)); return json({ ok: true, csrfToken: session.csrf, expiresAt: session.expiresAt, method: session.method }, 200, { 'Set-Cookie': sessionCookie(session, env.ENVIRONMENT !== 'test') }) }
@@ -312,13 +320,14 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     const access = await service.authenticate(request, !['GET','HEAD'].includes(method))
     if (path === '/me' && method === 'GET') return json({ ok: true, admin: { adminId: access.principal.adminId, username: access.principal.username, displayName: access.principal.displayName, roles: [...access.roles], permissions: [...access.permissions], templateScopes: [...access.templateScope], groupScopes: [...access.groupScope], superAdmin: access.superAdmin, totpEnabled: Boolean(access.principal.totpEnabled), hasPassword: Boolean(access.principal.passwordHash), sessionMethod: access.session.authMethod } })
     if (path === '/dashboard' && method === 'GET') { const sessions=(await list(kv,'session')).filter(x=>!x.revokedAt&&x.expiresAt>Date.now()&&(access.superAdmin||x.adminId===access.principal.adminId)).length,templates=(await listValues(kv,'te_tpl_')).filter(x=>!x.deletedAt).length,groups=(await listValues(kv,'te_grp_')).filter(x=>!x.deletedAt).length;return json({ok:true,counts:{sessions,templates:access.superAdmin?templates:access.templateScope.size,groups:access.superAdmin?groups:access.groupScope.size}}) }
-    if (path === '/backup/status' && method === 'GET') return json({ ok: true, available: access.superAdmin && Boolean(backupStorage), canExport: access.superAdmin && Boolean(backupStorage), canRestore: access.superAdmin && Boolean(backupStorage), schemaVersion: 1 })
+    if (path === '/backup/status' && method === 'GET') return json({ ok: true, available: access.superAdmin && Boolean(backupStorage), canExport: access.superAdmin && Boolean(backupStorage), canRestore: access.superAdmin && Boolean(backupStorage), schemaVersion: 1, sections: BACKUP_SECTIONS })
     if (path === '/backup/export' && method === 'GET') {
       if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
-      const packages = backupStorage ? (await backupStorage.listPackages()).map(x => packageIdentity(x.objectRef)).filter(Boolean) : []
-      const records = await backupRecords(kv)
+      const selection=requestedBackupSections(url)
+      const packages = selection.has('packages')&&backupStorage ? (await backupStorage.listPackages()).map(x => packageIdentity(x.objectRef)).filter(Boolean) : []
+      const records = (await backupRecords(kv)).filter(record=>{const section=backupRecordSection(record.name);return section!==null&&selection.has(section)})
       await service.audit(access.principal.adminId, 'BACKUP_EXPORT', 'system', 'full')
-      return json({ ok: true, format: 'jilu-admin-backup', schemaVersion: 1, exportedAt: Date.now(), records, packages })
+      return json({ ok: true, format: 'jilu-admin-backup', schemaVersion: 1, exportedAt: Date.now(), selection:[...selection], records, packages })
     }
     const backupPackage = path.match(/^\/backup\/packages\/(tpl_[a-z0-9_-]{3,80})\/(\d+)$/)
     if (backupPackage && method === 'GET') {

@@ -69,6 +69,15 @@ test('passkey-authenticated Edge administrator can set a new password after remo
   assert.equal(response.status, 200)
 })
 
+test('password login is progressively locked by username and client address', async () => {
+  const kv = new Kv(), env = { ADMIN_MIGRATION_TOKEN: 'migration-secret', ADMIN_CREDENTIAL_KEY: 'test-admin-credential-key-at-least-32-bytes', ENVIRONMENT: 'test' }
+  const raw = await migration('correct horse battery staple'), signature = createHmac('sha256', env.ADMIN_MIGRATION_TOKEN).update(raw).digest('base64url'), handler = createEdgeAdminHandler({ kv, env })
+  await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': signature } })
+  for (let attempt = 0; attempt < 5; attempt++) await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'wrong password' }, headers: { 'x-forwarded-for': '198.51.100.8' } })
+  const response = await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'correct horse battery staple' }, headers: { 'x-forwarded-for': '198.51.100.8' } }), body = await response.json()
+  assert.equal(response.status, 429); assert.equal(body.code, 'ADMIN_LOGIN_RATE_LIMITED'); assert.ok(Number(response.headers.get('retry-after')) > 0)
+})
+
 test('migration import fails closed on a bad signature and is idempotent', async () => {
   const kv = new Kv(), env = { ADMIN_MIGRATION_TOKEN: 'migration-secret', ENVIRONMENT: 'test' }, handler = createEdgeAdminHandler({ kv, env }), raw = await migration('correct horse battery staple')
   assert.equal((await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': 'bad' } })).status, 403)
@@ -117,10 +126,11 @@ test('super admin exports and restores chunked records and template packages', a
   await kv.put('te_s_tpl_sub_backup_tpl_backup', '1')
   await storage.putPackage('tpl_backup', 1, new Uint8Array([1, 2, 3, 4]))
   response = await invoke(handler, '/admin/v1/console/backup/status', { headers: { cookie } })
-  assert.deepEqual(await response.json(), { ok: true, available: true, canExport: true, canRestore: true, schemaVersion: 1 })
+  assert.deepEqual(await response.json(), { ok: true, available: true, canExport: true, canRestore: true, schemaVersion: 1, sections: ['administrators','users','templates','groups','entitlements','audit','packages'] })
   response = await invoke(handler, '/admin/v1/console/backup/export', { headers: { cookie } })
   const manifest = await response.json()
-  assert.equal(manifest.format, 'jilu-admin-backup'); assert.equal(manifest.records.some(x => x.name === 'admin:principal:adm_test'), true); assert.equal(manifest.records.some(x => x.name === 'subject_sub_backup'), true); assert.equal(manifest.records.some(x => x.name === 'te_s_tpl_sub_backup_tpl_backup'), true); assert.deepEqual(manifest.packages, [{ templateId: 'tpl_backup', templateVersion: 1 }])
+  assert.equal(manifest.format, 'jilu-admin-backup'); assert.deepEqual(manifest.selection,['administrators','users','templates','groups','entitlements','audit','packages']); assert.equal(manifest.records.some(x => x.name === 'admin:principal:adm_test'), true); assert.equal(manifest.records.some(x => x.name === 'subject_sub_backup'), true); assert.equal(manifest.records.some(x => x.name === 'te_s_tpl_sub_backup_tpl_backup'), true); assert.deepEqual(manifest.packages, [{ templateId: 'tpl_backup', templateVersion: 1 }])
+  response = await invoke(handler, '/admin/v1/console/backup/export?sections=users', { headers: { cookie } });const usersOnly=await response.json();assert.deepEqual(usersOnly.selection,['users']);assert.equal(usersOnly.records.some(x=>x.name==='subject_sub_backup'),true);assert.equal(usersOnly.records.some(x=>x.name.startsWith('admin:')),false);assert.deepEqual(usersOnly.packages,[])
   response = await invoke(handler, '/admin/v1/console/backup/packages/tpl_backup/1', { headers: { cookie } })
   const packageBytes = new Uint8Array(await response.arrayBuffer()), packageHash = response.headers.get('x-content-sha256')
   objects.clear(); await kv.delete('subject_sub_backup')
