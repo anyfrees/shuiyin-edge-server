@@ -1310,7 +1310,7 @@ var TemplatePublishService = class {
     if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
     const kv = this.repository.kv, meta = kv && JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null");
     if (!meta || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || meta.actorId !== actorId || this.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail2("PUBLISH_PREPARE_INVALID", 404);
-    const manifest = meta.manifest, draft = version.draft || {}, parts = packageParts(draft, manifest), characterLength = parts.reduce((sum, part) => sum + part.length, 0), packageSize = parts.reduce((sum, part) => sum + enc2.encode(part).byteLength, 0);
+    const manifest = meta.manifest, draft = version.draft || {}, parts = packageParts(draft, manifest), characterLength = parts.reduce((sum, part) => sum + part.length, 0), packageSize = characterLength;
     if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
     const chunkSize = 80000, total = Math.ceil(characterLength / chunkSize), index = Number(chunkIndex);
     if (!Number.isInteger(index) || index < 0 || index > total) throw fail2("PUBLISH_CHUNK_INVALID", 400);
