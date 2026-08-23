@@ -1301,6 +1301,28 @@ var TemplatePublishService = class {
     await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, manifest, createdAt: this.now() }));
     return { prepareId };
   }
+  async prepareClient({ templateId, templateVersion, client, actorId = "admin" }) {
+    const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
+    if (!template) throw fail2("TEMPLATE_NOT_AVAILABLE", 404);
+    if (!version || version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
+    if (!/^[a-f0-9]{64}$/.test(client?.contentDigest || "") || !client?.layout || !Array.isArray(client?.assets)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
+    const key2 = this.activeKey(), manifest = { format: "jilu-template", formatVersion: 2, templateId, templateVersion: Number(templateVersion), name: template.name, description: template.description, layout: client.layout, assets: client.assets, rendererCompatibility: { minimumRendererVersion: 2 }, createdAt: version.createdAt || 0, contentDigest: client.contentDigest, artifactSha256: null, signature: { algorithm: key2.algorithm || "Ed25519", keyId: key2.keyId, value: "" } };
+    manifest.signature.value = b64(await signDetached(manifest.signature.algorithm, signaturePayload(manifest), key2.privateKey));
+    const prepareId = crypto.randomUUID().replace(/-/g, ""), kv = this.repository.kv;
+    await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, manifest, createdAt: this.now(), client: true }));
+    return { prepareId, manifest };
+  }
+  async commitClient({ templateId, templateVersion, prepareId, artifactSha256, total, size, actorId = "admin", requestId = "" }) {
+    const kv = this.repository.kv, meta = JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null"), template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));
+    if (!meta?.client || meta.actorId !== actorId || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || !template || version?.status !== "DRAFT") throw fail2("PUBLISH_PREPARE_INVALID", 409);
+    if (!/^[a-f0-9]{64}$/.test(artifactSha256 || "") || !Number.isInteger(Number(total)) || Number(total) < 1 || Number(total) > 128) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
+    const manifest = { ...meta.manifest, artifactSha256 }, publishedAt = this.now(), opId = this.operationId(), objectRef = this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`;
+    await kv.put(`te_pkg_${templateId}_${templateVersion}_meta`, JSON.stringify({ objectRef, total: Number(total), size: Number(size), encoding: "utf8", createdAt: publishedAt }));
+    const published = { ...version, status: "PUBLISHED", previewLayout: structuredClone(version.draft?.layout), contentDigest: manifest.contentDigest, artifactSha256, packageSha256: artifactSha256, packageSize: Number(size), signature: manifest.signature.value, packageSignature: manifest.signature.value, signatureKeyId: manifest.signature.keyId, signatureAlgorithm: manifest.signature.algorithm, packageKeyId: manifest.signature.keyId, internalObjectRef: objectRef, publishedAt, publishedBy: actorId, draft: void 0 };
+    await this.repository.commitPublished({ version: published, template: { ...template, latestVersion: Math.max(Number(template.latestVersion) || 0, Number(templateVersion)), updatedAt: publishedAt, publishedAt }, audit: { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: manifest.contentDigest, artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) }, operation: { operationId: opId, templateId, templateVersion: Number(templateVersion), status: "COMPLETED", actorId, requestId: String(requestId).slice(0, 128), objectRef, createdAt: publishedAt, updatedAt: publishedAt } });
+    await kv.delete(`te_prepared_${prepareId}_meta`);
+    return this.response(published);
+  }
   async commitPrepared({ templateId, templateVersion, prepareId, chunkIndex = 0, actorId = "admin", requestId = "" }) {
     if (!this.storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
     const template = await this.repository.getTemplate(templateId), version = await this.repository.getVersion(templateId, Number(templateVersion));

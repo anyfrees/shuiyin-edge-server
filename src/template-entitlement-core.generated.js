@@ -656,6 +656,10 @@ var handle = async ({
       if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
       return json(await publishService.prepare({ templateId: m[1], templateVersion: Number(m[2]), actorId: actor }));
     }
+    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/prepare-client-publish$/);
+    if (m && request.method === "POST") return json(await publishService.prepareClient({ templateId: m[1], templateVersion: Number(m[2]), client: body, actorId: actor }));
+    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/commit-client-publish$/);
+    if (m && request.method === "POST") return json(await publishService.commitClient({ templateId: m[1], templateVersion: Number(m[2]), ...body, actorId: actor, requestId: request.headers.get("x-request-id") || "" }));
     m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/commit-prepared$/);
     if (m && request.method === "POST") {
       if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);

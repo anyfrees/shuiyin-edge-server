@@ -470,10 +470,19 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await service.require(access, { permission: 'template.publish', templateId: recoverPublish[1] })
       return forwardAdmin(path, 'POST', await bodyOf(request))
     }
-    const stagedPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/(prepare-publish|commit-prepared)$/)
+    const stagedPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/(prepare-publish|commit-prepared|prepare-client-publish|commit-client-publish)$/)
     if (stagedPublish && method === 'POST') {
       await service.require(access, { permission: 'template.publish', templateId: decodeURIComponent(stagedPublish[1]) })
       return forwardAdmin(path, 'POST', await bodyOf(request))
+    }
+    const packageChunk = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/package-chunks\/(\d+)$/)
+    if (packageChunk && method === 'POST') {
+      const templateId = decodeURIComponent(packageChunk[1]), templateVersion = Number(packageChunk[2]), index = Number(packageChunk[3]), input = await bodyOf(request)
+      await service.require(access, { permission: 'template.publish', templateId })
+      const meta = parse(await kv.get(`te_prepared_${input.prepareId}_meta`))
+      if (!meta?.client || meta.actorId !== access.principal.adminId || meta.templateId !== templateId || Number(meta.templateVersion) !== templateVersion || !Number.isInteger(index) || index < 0 || index >= 128 || typeof input.chunk !== 'string' || input.chunk.length > 90000) throw fail('PUBLISH_CHUNK_INVALID', 400)
+      await kv.put(`te_pkg_${templateId}_${templateVersion}_${index}`, input.chunk)
+      return json({ ok: true, index })
     }
     const staleVersion = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/stale$/)
     if (staleVersion && method === 'DELETE') {
