@@ -842,6 +842,9 @@ var MemoryTemplateEntitlementRepository = class {
   async getTemplate(id) {
     return structuredClone(this.templates.get(id) || null);
   }
+  async listTemplates() {
+    return [...this.templates.values()].map((template) => structuredClone(template));
+  }
   async listCandidateTemplateIds({ subjectId, internal = false, anonymous = false, groupIds = [] }) {
     const ids = [];
     for (const x of this.templates.values()) if ((anonymous ? ["PUBLIC"] : ["PUBLIC", "AUTHENTICATED"]).includes(x.visibility) || internal && x.visibility === "INTERNAL") ids.push(x.templateId);
@@ -988,7 +991,8 @@ var TemplateEntitlementService = class {
   }
   async detail(subject, templateId) {
     const ctx = await this.context(subject, templateId);
-    if (!evaluateTemplateAccess(ctx).allowed) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
+    const creatorOwned = ctx.template?.contributionType === "USER_SUBMISSION" && ctx.template.creatorPublicId && ctx.template.creatorPublicId === subject.publicId;
+    if (!creatorOwned && !evaluateTemplateAccess(ctx).allowed) throw new EntitlementError("TEMPLATE_NOT_AVAILABLE", 404);
     const version = await this.repository.getVersion(templateId, Number(ctx.template.latestVersion));
     return { ...publicTemplate(ctx.template), previewLayout: version?.previewLayout || null };
   }
@@ -998,7 +1002,11 @@ var TemplateEntitlementService = class {
     const memberships = subject.anonymous === true ? [] : await this.repository.listMemberships(subject.subjectId), groups = (await Promise.all(memberships.map((x) => this.repository.getGroup(x.groupId)))).filter(Boolean);
     let page;
     try {
-      page = await this.repository.listCandidatePage({ subjectId: subject.subjectId, internal: subject.internal === true, anonymous: subject.anonymous === true, groupIds: groups.map((x) => x.groupId), limit, cursor });
+      if (category === "creative" && subject.anonymous !== true) {
+        const owned = (await this.repository.listTemplates()).filter((template) => template?.enabled !== false && !template?.deletedAt && template.contributionType === "USER_SUBMISSION" && template.creatorPublicId === subject.publicId).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+        const offset = cursor ? Number(JSON.parse(atob(cursor)).offset) || 0 : 0, ids = owned.slice(offset, offset + limit).map((template) => template.templateId);
+        page = { ids, nextCursor: offset + ids.length < owned.length ? btoa(JSON.stringify({ offset: offset + ids.length })) : null };
+      } else page = await this.repository.listCandidatePage({ subjectId: subject.subjectId, internal: subject.internal === true, anonymous: subject.anonymous === true, groupIds: groups.map((x) => x.groupId), limit, cursor });
     } catch {
       throw new EntitlementError("INVALID_CURSOR");
     }
