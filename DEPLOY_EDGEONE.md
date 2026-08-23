@@ -34,7 +34,7 @@
 3. 微信小程序的 AppID 和 AppSecret。
 4. 腾讯位置服务 WebService Key；如果 Key 开启了签名校验，还需要对应 Secret Key。
 5. 身份派生、下载令牌及 Ed25519 签名所需的安全密钥。
-6. 一个 API 域名，例如 `api.shuiyin.nnu.cn`，并确保小程序后台已将它加入合法请求域名。
+6. 一个独立测试 API 域名，例如 `test.shuiyin.nnu.cn`。测试 Web 使用 `web.shuiyin.nnu.cn`；生产验收前不要修改 `api.shuiyin.nnu.cn`。
 
 建议先在测试环境部署，验证通过后再绑定生产域名。
 
@@ -128,7 +128,10 @@ TEMPLATE_BLOB_STORE=jilu-templates
 | --- | --- | --- |
 | `WECHAT_APP_ID` | 普通变量 | 微信小程序 AppID |
 | `WECHAT_APP_SECRET` | Secret | 微信小程序 AppSecret |
-| `ALLOWED_ORIGIN` | 普通变量 | 允许访问 API 的 Web 来源，例如 `https://shuiyin.nnu.cn` |
+| `ALLOWED_ORIGIN` | 普通变量 | 允许访问 API 的 Web 来源；测试环境填写 `https://web.shuiyin.nnu.cn`，多个来源用英文逗号分隔 |
+| `ADMIN_ORIGIN` | 普通变量 | Passkey 允许的精确来源；测试环境填写 `https://web.shuiyin.nnu.cn` |
+| `ADMIN_WEBAUTHN_RP_ID` | 普通变量 | 建议保持 `shuiyin.nnu.cn`，以便子域共享同一 RP 范围 |
+| `ADMIN_BOOTSTRAP_TOKEN` | 加密变量 | 首次部署一次性初始化密钥，至少 32 字节随机值；创建首位管理员后入口自动关闭 |
 | `JILU_IDENTITY_HMAC_KEY` | Secret | 登录会话和身份数据的 HMAC 密钥 |
 | `JILU_SUBJECT_DERIVATION_KEY` | Secret | 将微信身份派生为内部用户标识的密钥 |
 | `JILU_CAPTURE_TICKET_KEYS` | Secret | 拍摄票据 Ed25519 密钥列表，JSON 数组 |
@@ -202,6 +205,8 @@ TEMPLATE_BLOB_STORE=jilu-templates
 [ ] 模板下载令牌密钥已配置
 [ ] 腾讯位置服务 Key 已配置
 [ ] ALLOWED_ORIGIN 使用完整 HTTPS 来源且末尾无多余路径
+[ ] 测试 API 绑定 test.shuiyin.nnu.cn，测试 Web 绑定 web.shuiyin.nnu.cn
+[ ] 未把 admin/admin 或其他固定弱密码写入代码、文档或环境变量
 [ ] 生产和预览环境均配置了各自需要的变量与绑定
 ```
 
@@ -240,6 +245,14 @@ npm run check
 该命令包含 TypeScript 检查和 Cloudflare dry-run，不会正式发布。
 
 ## 9. 首次部署
+
+### 9.1 首次管理员初始化
+
+全新数据空间不会内置 `admin/admin`。打开测试管理台后，页面检测到尚无管理员时会显示“首次部署初始化”。输入部署时配置的 `ADMIN_BOOTSTRAP_TOKEN`、自定义账号和不少于 12 位的新密码。首位超级管理员创建成功后，该接口永久返回 `BOOTSTRAP_CLOSED`。
+
+完成登录后，可在“安全与会话 → 完整备份与恢复”导出迁移文件。导出内容包含管理员、通行密钥、用户、用户备注、用户组、授权、模板配置、索引、审计和模板资源包；恢复时配置记录每 50 条提交一次，模板包逐个提交，以避开 EdgeOne 单请求 1 MB 限制。备份含密码哈希、TOTP 密文等敏感管理数据，必须存放在受控位置。
+
+从现有生产服务迁移时，先登录仍指向 `api.shuiyin.nnu.cn` 的管理台并导出完整备份。传统服务只显示“导出”，不会在原库上执行覆盖恢复。随后打开 `web.shuiyin.nnu.cn`，确认其 API 请求指向 `test.shuiyin.nnu.cn`，登录测试 EdgeOne 管理台后选择该备份恢复。恢复完成后重新登录，并逐项验收管理员、用户、用户组、授权、模板预览和模板安装。生产 DNS 在全部验收通过前保持不变。
 
 1. 完成构建配置、资源绑定和环境变量配置。
 2. 在 Makers 控制台触发“重新部署”或“部署最新提交”。

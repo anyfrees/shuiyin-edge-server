@@ -23,6 +23,9 @@ const b64 = (b) => Buffer.from(b).toString("base64url"),
     i.toString(16).padStart(64, "0"),
   ),regional={algorithm:'regional-integrity-v3',grid:{columns:4,rows:4},descriptorFormat:'hybrid-normalized-patch-8x8-residual4x4-v1-base64url',blocks:Array.from({length:16},(_,index)=>({index,descriptor:Buffer.alloc(80,index).toString('base64url')}))},watermark={algorithm:'watermark-integrity-v2',grid:{columns:4,rows:3},descriptorFormat:'int8-normalized-patch-8x8-base64url',blocks:Array.from({length:12},(_,index)=>({index,descriptor:Buffer.alloc(64,index).toString('base64url')}))};
 test("Wrangler local D1 migration and authoritative registration transaction", async (t) => {
+  const exactHash = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex"),
+    dHash = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex"),
+    pHash = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
   const worker = await unstable_dev(
     "tests/fixtures/d1-registration-worker.js",
     { config: "wrangler.jsonc", local: true, persist: true, logLevel: "none" },
@@ -65,9 +68,9 @@ test("Wrangler local D1 migration and authoritative registration transaction", a
           altitudeMeters: null,
         },
         binding: {
-          sha256: "a".repeat(64),
-          dhash256: "b".repeat(64),
-          phash256: "c".repeat(64),
+          sha256: exactHash,
+          dhash256: dHash,
+          phash256: pHash,
           blindMarkerId: ticket.markerId,
           blindWatermarkEmbedded: true,
           blindEvidence: {
@@ -113,7 +116,7 @@ test("Wrangler local D1 migration and authoritative registration transaction", a
   assert.equal(replays.length, 19);
   assert.equal(new Set(concurrent.map((x) => x.recordId)).size, 1);
   assert.equal(concurrent.every((x) => JSON.stringify(x.receipt) === JSON.stringify(first.receipt)), true);
-  await worker.stop();const reopened=await unstable_dev('tests/fixtures/d1-registration-worker.js',{config:'wrangler.jsonc',local:true,persist:true,logLevel:'none'});t.after(()=>reopened.stop());const verified=await reopened.fetch('http://local/',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'verify',receiptKeys:[receipt],request:{protocolVersion:2,file:{algorithm:'sha256-v1',sha256:'a'.repeat(64)},fingerprints:{dhash:{algorithm:'dhash256-v2',value:'b'.repeat(64)},phash:{algorithm:'phash256-v1',value:'c'.repeat(64)},regional,watermark:{...watermark,bounds:{x:.1,y:.7,width:.8,height:.2}}},blindMarker:{algorithm:'jilu-blind-v2',protocolVersion:2,extracted:true,markerId:ticket.markerId,ticketDigest:digest,flags:1,crcValid:true,confidence:.9}}})}).then(r=>r.json());
+  await worker.stop();const reopened=await unstable_dev('tests/fixtures/d1-registration-worker.js',{config:'wrangler.jsonc',local:true,persist:true,logLevel:'none'});t.after(()=>reopened.stop());const verified=await reopened.fetch('http://local/',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'verify',receiptKeys:[receipt],request:{protocolVersion:2,file:{algorithm:'sha256-v1',sha256:exactHash},fingerprints:{dhash:{algorithm:'dhash256-v2',value:dHash},phash:{algorithm:'phash256-v1',value:pHash},regional,watermark:{...watermark,bounds:{x:.1,y:.7,width:.8,height:.2}}},blindMarker:{algorithm:'jilu-blind-v2',protocolVersion:2,extracted:true,markerId:ticket.markerId,ticketDigest:digest,flags:1,crcValid:true,confidence:.9}}})}).then(r=>r.json());
   assert.equal(verified.status,'EXACT_FILE',JSON.stringify(verified));
   const reopenedRecord=await reopened.fetch('http://local/',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'get',recordId:first.recordId})}).then(r=>r.json());assert.deepEqual(reopenedRecord.integrity.blocks,regional.blocks);assert.deepEqual(reopenedRecord.watermarkIntegrity.blocks,watermark.blocks);assert.equal(reopenedRecord.recordDigest,first.recordDigest);assert.deepEqual(reopenedRecord.receipt,first.receipt);
   assert.equal(JSON.stringify(verified).includes('latitude'),false);

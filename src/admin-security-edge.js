@@ -198,10 +198,42 @@ const routePermission = (path, method) => {
   return null
 }
 
-export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken }) => async request => {
+const BACKUP_PREFIXES = Object.freeze([
+  'admin:principal:', 'admin:username:', 'admin:passkey:', 'admin:recovery:',
+  'subject_', 'public_', 'subject-meta_', 'id_',
+  'te_tpl_', 'te_ver_', 'te_grp_', 'te_mem_', 'te_dg_', 'te_gg_',
+  'te_idx_', 'te_s_tpl_', 'te_s_grp_', 'te_g_tpl_',
+  'te_epoch_', 'te_audit_', 'admin:audit:'
+])
+const backupRecords = async kv => {
+  const records = []
+  for (const prefix of BACKUP_PREFIXES) {
+    for (const item of await listRecords(kv, prefix)) records.push({ name: item.name, value: await kv.get(item.name) })
+  }
+  return records.sort((a, b) => a.name.localeCompare(b.name))
+}
+const packageIdentity = objectRef => {
+  const match = String(objectRef || '').match(/^templates\/(tpl_[a-z0-9_-]{3,80})\/v(\d+)\/package\.jltpkg$/)
+  return match ? { templateId: match[1], templateVersion: Number(match[2]) } : null
+}
+const byteDigest = async value => b64u(new Uint8Array(await crypto.subtle.digest('SHA-256', value)))
+
+export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupStorage }) => async request => {
   const service = new EdgeAdminSecurityService({ kv, env }), url = new URL(request.url), path = url.pathname.replace(/^\/admin\/v1\/console/, ''), method = request.method
   let migrationAuthorized=false
   try {
+    if (path === '/bootstrap/status' && method === 'GET') {
+      const principals = await list(kv, 'principal')
+      return json({ ok: true, initialized: principals.length > 0 })
+    }
+    if (path === '/bootstrap' && method === 'POST') {
+      const expected = String(env.ADMIN_BOOTSTRAP_TOKEN || '')
+      const supplied = String(request.headers.get('x-bootstrap-token') || '')
+      if (!expected || !timingSafe(supplied, expected)) throw fail('BOOTSTRAP_DENIED', 403)
+      if ((await list(kv, 'principal')).length) throw fail('BOOTSTRAP_CLOSED', 409)
+      const admin = await service.createPrincipal(null, { ...(await bodyOf(request)), roles: ['SUPER_ADMIN'], templateScopes: [], groupScopes: [] }, true)
+      return json({ ok: true, admin }, 201)
+    }
     if (path === '/migration/import' && method === 'POST') {
       if (!env.ADMIN_MIGRATION_TOKEN) throw fail('MIGRATION_DISABLED', 404)
       const raw = await request.text(), supplied = request.headers.get('x-migration-signature') || '', expected = await hmac(env.ADMIN_MIGRATION_TOKEN, raw)
@@ -233,6 +265,44 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken }) => as
     const access = await service.authenticate(request, !['GET','HEAD'].includes(method))
     if (path === '/me' && method === 'GET') return json({ ok: true, admin: { adminId: access.principal.adminId, username: access.principal.username, displayName: access.principal.displayName, roles: [...access.roles], permissions: [...access.permissions], templateScopes: [...access.templateScope], groupScopes: [...access.groupScope], superAdmin: access.superAdmin, totpEnabled: Boolean(access.principal.totpEnabled), hasPassword: Boolean(access.principal.passwordHash), sessionMethod: access.session.authMethod } })
     if (path === '/dashboard' && method === 'GET') { const sessions=(await list(kv,'session')).filter(x=>!x.revokedAt&&x.expiresAt>Date.now()&&(access.superAdmin||x.adminId===access.principal.adminId)).length,templates=(await listValues(kv,'te_tpl_')).filter(x=>!x.deletedAt).length,groups=(await listValues(kv,'te_grp_')).filter(x=>!x.deletedAt).length;return json({ok:true,counts:{sessions,templates:access.superAdmin?templates:access.templateScope.size,groups:access.superAdmin?groups:access.groupScope.size}}) }
+    if (path === '/backup/status' && method === 'GET') return json({ ok: true, available: access.superAdmin && Boolean(backupStorage), canExport: access.superAdmin && Boolean(backupStorage), canRestore: access.superAdmin && Boolean(backupStorage), schemaVersion: 1 })
+    if (path === '/backup/export' && method === 'GET') {
+      if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
+      const packages = backupStorage ? (await backupStorage.listPackages()).map(x => packageIdentity(x.objectRef)).filter(Boolean) : []
+      const records = await backupRecords(kv)
+      await service.audit(access.principal.adminId, 'BACKUP_EXPORT', 'system', 'full')
+      return json({ ok: true, format: 'jilu-admin-backup', schemaVersion: 1, exportedAt: Date.now(), records, packages })
+    }
+    const backupPackage = path.match(/^\/backup\/packages\/(tpl_[a-z0-9_-]{3,80})\/(\d+)$/)
+    if (backupPackage && method === 'GET') {
+      if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
+      const raw = await backupStorage?.getPackage(backupPackage[1], Number(backupPackage[2]))
+      if (!raw) throw fail('TEMPLATE_VERSION_NOT_FOUND', 404)
+      return new Response(raw, { headers: { 'content-type': 'application/octet-stream', 'content-length': String(raw.byteLength), 'x-content-sha256': await byteDigest(raw) } })
+    }
+    if (path === '/backup/restore/records' && method === 'POST') {
+      if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
+      const input = await bodyOf(request), records = Array.isArray(input.records) ? input.records : []
+      if (!records.length || records.length > 50) throw fail('BACKUP_PAYLOAD_INVALID', 400)
+      for (const record of records) {
+        if (!BACKUP_PREFIXES.some(prefix => String(record.name || '').startsWith(prefix)) || typeof record.value !== 'string') throw fail('BACKUP_PAYLOAD_INVALID', 400)
+        if (record.value.length > 950_000) throw fail('BACKUP_PAYLOAD_INVALID', 400)
+        await kv.put(record.name, record.value)
+      }
+      await service.audit(access.principal.adminId, 'BACKUP_RESTORE_RECORDS', 'system', 'full', 'SUCCESS', { count: records.length })
+      return json({ ok: true, restored: records.length })
+    }
+    const restorePackage = path.match(/^\/backup\/restore\/packages\/(tpl_[a-z0-9_-]{3,80})\/(\d+)$/)
+    if (restorePackage && method === 'POST') {
+      if (!access.superAdmin) throw fail('ADMIN_SCOPE_DENIED', 403)
+      if (!backupStorage) throw fail('OBJECT_STORAGE_NOT_CONFIGURED', 503)
+      const raw = new Uint8Array(await request.arrayBuffer()), expected = String(request.headers.get('x-content-sha256') || '')
+      if (!raw.byteLength || !expected || !timingSafe(await byteDigest(raw), expected)) throw fail('BACKUP_PACKAGE_INVALID', 400)
+      if (await backupStorage.getPackage(restorePackage[1], Number(restorePackage[2]))) return json({ ok: true, alreadyPresent: true })
+      await backupStorage.putPackage(restorePackage[1], Number(restorePackage[2]), raw)
+      await service.audit(access.principal.adminId, 'BACKUP_RESTORE_PACKAGE', 'template', restorePackage[1], 'SUCCESS', { templateVersion: Number(restorePackage[2]), size: raw.byteLength })
+      return json({ ok: true, restored: true }, 201)
+    }
     if(path==='/subjects'&&method==='GET'){
       await service.require(access,{permission:'template.read'})
       const subjects=await listValues(kv,'subject_'),direct=access.superAdmin?[]:await listValues(kv,'te_dg_'),memberships=access.superAdmin?[]:await listValues(kv,'te_mem_'),visible=new Set()

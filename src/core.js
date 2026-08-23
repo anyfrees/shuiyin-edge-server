@@ -187,14 +187,17 @@ const corsHeaders = (request, env) => {
     "Referrer-Policy": "no-referrer",
   };
   const origin = request.headers.get("origin");
-  const allowed = env.ALLOWED_ORIGIN || "https://shuiyin.nnu.cn";
-  if (origin === allowed)
+  const allowed = String(env.ALLOWED_ORIGIN || "https://shuiyin.nnu.cn")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (origin && allowed.includes(origin))
     Object.assign(headers, {
-      "Access-Control-Allow-Origin": allowed,
+      "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, X-CSRF-Token, X-Request-Id",
+        "Content-Type, Authorization, X-CSRF-Token, X-Request-Id, X-Bootstrap-Token, X-Content-Sha256",
       "Access-Control-Max-Age": "86400",
       Vary: "Origin",
     });
@@ -789,6 +792,7 @@ export async function handleRequest(request, env, kv) {
         adminToken = env.ADMIN_TOKEN || `internal-${crypto.randomUUID()}`;
       handlers = {
         adminToken,
+        storage,
         entitlement: createTemplateHttpHandler({
           service,
           publishService,
@@ -826,6 +830,7 @@ export async function handleRequest(request, env, kv) {
           env,
           forward: handlers.entitlement,
           forwardToken: handlers.adminToken,
+          backupStorage: handlers.storage,
         });
         adminHandlers.set(env, admin);
       }

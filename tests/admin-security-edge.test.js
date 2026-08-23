@@ -61,3 +61,48 @@ test('migration import fails closed on a bad signature and is idempotent', async
   const repeat = await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': signature } })
   assert.equal(repeat.status, 200); assert.equal((await repeat.json()).alreadyImported, true)
 })
+
+test('fresh Edge deployment uses a one-time bootstrap token and never a default password', async () => {
+  const kv = new Kv(), env = { ADMIN_BOOTSTRAP_TOKEN: 'one-time-bootstrap-token', ENVIRONMENT: 'test' }
+  const handler = createEdgeAdminHandler({ kv, env })
+  let response = await invoke(handler, '/admin/v1/console/bootstrap/status')
+  assert.deepEqual(await response.json(), { ok: true, initialized: false })
+  response = await invoke(handler, '/admin/v1/console/bootstrap', { method: 'POST', body: { username: 'admin', password: 'a-unique-password-123', displayName: '初始管理员' }, headers: { 'x-bootstrap-token': 'wrong' } })
+  assert.equal(response.status, 403)
+  response = await invoke(handler, '/admin/v1/console/bootstrap', { method: 'POST', body: { username: 'admin', password: 'a-unique-password-123', displayName: '初始管理员' }, headers: { 'x-bootstrap-token': env.ADMIN_BOOTSTRAP_TOKEN } })
+  assert.equal(response.status, 201)
+  response = await invoke(handler, '/admin/v1/console/bootstrap/status')
+  assert.deepEqual(await response.json(), { ok: true, initialized: true })
+  response = await invoke(handler, '/admin/v1/console/bootstrap', { method: 'POST', body: { username: 'admin2', password: 'another-password-123', displayName: '管理员 2' }, headers: { 'x-bootstrap-token': env.ADMIN_BOOTSTRAP_TOKEN } })
+  assert.equal(response.status, 409)
+})
+
+test('super admin exports and restores chunked records and template packages', async () => {
+  const kv = new Kv(), objects = new Map(), env = { ADMIN_MIGRATION_TOKEN: 'migration-secret', ENVIRONMENT: 'test' }
+  const storage = {
+    objectRef: (id, version) => `templates/${id}/v${version}/package.jltpkg`,
+    async listPackages() { return [...objects.entries()].map(([objectRef, value]) => ({ objectRef, size: value.byteLength })) },
+    async getPackage(id, version) { return objects.get(this.objectRef(id, version)) || null },
+    async putPackage(id, version, value) { objects.set(this.objectRef(id, version), new Uint8Array(value)) },
+  }
+  const raw = await migration('correct horse battery staple'), signature = createHmac('sha256', env.ADMIN_MIGRATION_TOKEN).update(raw).digest('base64url')
+  const handler = createEdgeAdminHandler({ kv, env, backupStorage: storage })
+  await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': signature } })
+  let response = await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'correct horse battery staple' } })
+  const login = await response.json(), cookie = response.headers.get('set-cookie').split(';')[0], auth = { cookie, 'x-csrf-token': login.csrfToken }
+  await kv.put('subject_sub_backup', JSON.stringify({ subjectId: 'sub_backup', publicId: 'JL-BACKUP' }))
+  await kv.put('te_s_tpl_sub_backup_tpl_backup', '1')
+  await storage.putPackage('tpl_backup', 1, new Uint8Array([1, 2, 3, 4]))
+  response = await invoke(handler, '/admin/v1/console/backup/status', { headers: { cookie } })
+  assert.deepEqual(await response.json(), { ok: true, available: true, canExport: true, canRestore: true, schemaVersion: 1 })
+  response = await invoke(handler, '/admin/v1/console/backup/export', { headers: { cookie } })
+  const manifest = await response.json()
+  assert.equal(manifest.format, 'jilu-admin-backup'); assert.equal(manifest.records.some(x => x.name === 'admin:principal:adm_test'), true); assert.equal(manifest.records.some(x => x.name === 'subject_sub_backup'), true); assert.equal(manifest.records.some(x => x.name === 'te_s_tpl_sub_backup_tpl_backup'), true); assert.deepEqual(manifest.packages, [{ templateId: 'tpl_backup', templateVersion: 1 }])
+  response = await invoke(handler, '/admin/v1/console/backup/packages/tpl_backup/1', { headers: { cookie } })
+  const packageBytes = new Uint8Array(await response.arrayBuffer()), packageHash = response.headers.get('x-content-sha256')
+  objects.clear(); await kv.delete('subject_sub_backup')
+  response = await invoke(handler, '/admin/v1/console/backup/restore/records', { method: 'POST', body: { records: manifest.records.filter(x => x.name === 'subject_sub_backup') }, headers: auth })
+  assert.equal(response.status, 200); assert.ok(await kv.get('subject_sub_backup'))
+  response = await handler(new Request('https://api.example/admin/v1/console/backup/restore/packages/tpl_backup/1', { method: 'POST', headers: { ...auth, 'content-type': 'application/octet-stream', 'x-content-sha256': packageHash }, body: packageBytes }))
+  assert.equal(response.status, 201); assert.deepEqual([...await storage.getPackage('tpl_backup', 1)], [1, 2, 3, 4])
+})
