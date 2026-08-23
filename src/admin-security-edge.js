@@ -50,7 +50,7 @@ const timingSafe = (left, right) => {
   let different = 0; for (let index = 0; index < a.length; index++) different |= a[index] ^ b[index]; return different === 0
 }
 const argonHash = async (password, encodedHash = '') => {
-  let salt, t = 3, m = 65536, p = 1, expected
+  let salt, t = 2, m = 19456, p = 1, expected
   if (encodedHash) {
     const match = String(encodedHash).match(/^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([^$]+)\$([^$]+)$/)
     if (!match) throw new Error('ARGON2_HASH_INVALID')
