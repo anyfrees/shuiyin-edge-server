@@ -927,6 +927,50 @@ export async function handleRequest(request, env, kv) {
       return authError(error, headers);
     }
   }
+  const creatorSessionSubject = async () => { const token=bearer(request),hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(token)))].map(x=>x.toString(16).padStart(2,"0")).join(""),session=JSON.parse(await kv.get(`creator:session:${hash}`)||"null");return session&&session.expiresAt>Date.now()?session.subjectId:null; };
+  if(url.pathname==="/v1/creator/sessions"&&request.method==="POST"){if(!kv)return json({ok:false,code:"PERSISTENT_STORAGE_NOT_CONFIGURED"},503,headers);try{const input=await request.json(),session=await authService(env,kv).withBindingCode(input.bindingCode,async subjectId=>{const bytes=new Uint8Array(32);crypto.getRandomValues(bytes);const token=btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");const hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(token)))].map(x=>x.toString(16).padStart(2,"0")).join(""),expiresAt=Date.now()+86400000;await kv.put(`creator:session:${hash}`,JSON.stringify({subjectId,expiresAt}),{expirationTtl:86400});return{token,expiresAt}});return json({ok:true,...session},201,headers)}catch(error){return json({ok:false,code:error.code||"CREATOR_LOGIN_FAILED"},error.status||500,headers)}}
+  if(url.pathname==="/v1/creator/me"&&request.method==="GET"){if(!kv)return json({ok:false,code:"PERSISTENT_STORAGE_NOT_CONFIGURED"},503,headers);const subjectId=await creatorSessionSubject();if(!subjectId)return json({ok:false,code:"CREATOR_SESSION_INVALID"},401,headers);const subject=JSON.parse(await kv.get(`subject_${subjectId}`)||"null"),submissionNames=(await kv.list({prefix:"submission:record:"})).keys||[],inquiryNames=(await kv.list({prefix:"creator:inquiry:"})).keys||[],submissions=[],inquiries=[];for(const item of submissionNames){const record=JSON.parse(await kv.get(item.name||item.key)||"null");if(record?.subjectId===subjectId)submissions.push({submissionId:record.submissionId,status:record.status,title:record.title,category:record.category,createdAt:record.createdAt,reviewedAt:record.reviewedAt,reviewNote:record.reviewNote||"",publishedTemplateId:record.publishedTemplateId||null})}for(const item of inquiryNames){const record=JSON.parse(await kv.get(item.name||item.key)||"null");if(record?.subjectId===subjectId)inquiries.push(record)}return json({ok:true,user:{publicId:subject?.publicId},submissions:submissions.sort((a,b)=>b.createdAt-a.createdAt),inquiries:inquiries.sort((a,b)=>b.createdAt-a.createdAt)},200,headers)}
+  if(url.pathname==="/v1/creator/inquiries"&&request.method==="POST"){if(!kv)return json({ok:false,code:"PERSISTENT_STORAGE_NOT_CONFIGURED"},503,headers);const subjectId=await creatorSessionSubject();if(!subjectId)return json({ok:false,code:"CREATOR_SESSION_INVALID"},401,headers);const input=await request.json(),subject=cleanText(input.subject,80),content=cleanText(input.content,1000);if(!subject||!content)return json({ok:false,code:"INQUIRY_INVALID"},400,headers);const inquiryId=`inq_${crypto.randomUUID().replaceAll("-","")}`,record={inquiryId,subjectId,subject,content,status:"OPEN",createdAt:Date.now(),resolvedAt:null,reply:""};await kv.put(`creator:inquiry:${inquiryId}`,JSON.stringify(record));return json({ok:true,inquiryId},201,headers)}
+  if (url.pathname === "/v1/template-submissions" && request.method === "POST") {
+    if (!kv) return json({ ok: false, code: "PERSISTENT_STORAGE_NOT_CONFIGURED" }, 503, headers);
+    try {
+      const input = await request.json(), template = input?.template;
+      if (!template || template.format !== "xianchang-jilu-watermark-scheme" || !template.scheme || !Array.isArray(template.scheme.fields))
+        return json({ ok: false, code: "TEMPLATE_SUBMISSION_INVALID" }, 400, headers);
+      const packageJson = JSON.stringify(template), byteLength = new TextEncoder().encode(packageJson).byteLength;
+      if (byteLength > 12 * 1024 * 1024) return json({ ok: false, code: "TEMPLATE_SUBMISSION_TOO_LARGE" }, 413, headers);
+      const title = cleanText(input.title || template.scheme.name, 40), description = cleanText(input.description, 300), category = cleanText(input.category, 40);
+      if (!title || !description || !category) return json({ ok: false, code: "TEMPLATE_SUBMISSION_INVALID" }, 400, headers);
+      const createSubmission = async subjectId => {
+        const activeKey = `submission:active:${subjectId}`, activeId = await kv.get(activeKey), active = activeId ? JSON.parse(await kv.get(`submission:record:${activeId}`) || "null") : null;
+        if (active?.status === "PENDING") throw Object.assign(new Error("pending"), { code: "SUBMISSION_ALREADY_PENDING", status: 409 });
+        const submissionId = `sub_${crypto.randomUUID().replaceAll("-", "")}`, tokenBytes = new Uint8Array(24); crypto.getRandomValues(tokenBytes);
+        const statusToken = btoa(String.fromCharCode(...tokenBytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""), statusTokenHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(statusToken)))].map(x => x.toString(16).padStart(2, "0")).join("");
+        const chunkSize = 80000, packageChunks = Math.ceil(packageJson.length / chunkSize), record = { submissionId, subjectId, status: "PENDING", title, description, category, contributionType: "USER_SUBMISSION", statusTokenHash, packageChunks, packageSize: byteLength, createdAt: Date.now(), reviewedAt: null, reviewedBy: null, reviewNote: "", publishedTemplateId: null };
+        await Promise.all([
+          kv.put(`submission:record:${submissionId}`, JSON.stringify(record)),
+          kv.put(activeKey, submissionId),
+          ...Array.from({ length: packageChunks }, (_, index) =>
+            kv.put(
+              `submission:package:${submissionId}:${index}`,
+              packageJson.slice(index * chunkSize, (index + 1) * chunkSize),
+            ),
+          ),
+        ]);
+        return { submissionId, statusToken, createdAt: record.createdAt };
+      };
+      const authenticatedSubject=await creatorSessionSubject();
+      const result=authenticatedSubject?await createSubmission(authenticatedSubject):await authService(env,kv).withBindingCode(input.bindingCode,createSubmission);
+      return json({ ok: true, ...result }, 201, headers);
+    } catch (error) { return json({ ok: false, code: error.code || "TEMPLATE_SUBMISSION_FAILED" }, error.status || 500, headers); }
+  }
+  const submissionStatus = url.pathname.match(/^\/v1\/template-submissions\/([^/]+)$/);
+  if (submissionStatus && request.method === "GET") {
+    if (!kv) return json({ ok: false, code: "PERSISTENT_STORAGE_NOT_CONFIGURED" }, 503, headers);
+    const record = JSON.parse(await kv.get(`submission:record:${decodeURIComponent(submissionStatus[1])}`) || "null"), supplied = url.searchParams.get("token") || "", suppliedHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(supplied)))].map(x => x.toString(16).padStart(2, "0")).join("");
+    if (!record || suppliedHash !== record.statusTokenHash) return json({ ok: false, code: "SUBMISSION_NOT_FOUND" }, 404, headers);
+    return json({ ok: true, submissionId: record.submissionId, status: record.status, reviewNote: record.reviewNote || "", publishedTemplateId: record.publishedTemplateId || null, createdAt: record.createdAt, reviewedAt: record.reviewedAt || null }, 200, headers);
+  }
   if (url.pathname === "/v1/auth/binding-code" && request.method === "POST") {
     try {
       const service = authService(env, kv),
