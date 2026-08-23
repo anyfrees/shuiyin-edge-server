@@ -113,3 +113,32 @@ test('super admin exports and restores chunked records and template packages', a
   response = await handler(new Request('https://api.example/admin/v1/console/backup/restore/packages/tpl_backup/1', { method: 'POST', headers: { ...auth, 'content-type': 'application/octet-stream', 'x-content-sha256': packageHash }, body: packageBytes }))
   assert.equal(response.status, 201); assert.deepEqual([...await storage.getPackage('tpl_backup', 1)], [1, 2, 3, 4])
 })
+
+test('admin template listing restores package previews and large mutations are buffered before forwarding', async () => {
+  const kv = new Kv(), objects = new Map(), env = { ADMIN_MIGRATION_TOKEN: 'migration-secret', ENVIRONMENT: 'test' }
+  const storage = {
+    objectRef: (id, version) => `templates/${id}/v${version}/package.jltpkg`,
+    async getPackage(id, version) { return objects.get(this.objectRef(id, version)) || null },
+  }
+  const previewBytes = new Uint8Array([1, 2, 3, 4])
+  const bundle = { manifest: { layout: { canvas: { width: 320, height: 180 } }, assets: [{ path: 'assets/preview.png', mimeType: 'image/png' }] }, files: { 'assets/preview.png': Buffer.from(previewBytes).toString('base64url') } }
+  objects.set(storage.objectRef('tpl_preview', 1), new TextEncoder().encode(JSON.stringify(bundle)))
+  let forwardedBody = null
+  const forward = async request => {
+    if (request.method === 'POST') forwardedBody = await request.json()
+    return Response.json({ ok: true, items: [{ templateId: 'tpl_preview', latestVersion: 1 }] })
+  }
+  const raw = await migration('correct horse battery staple'), signature = createHmac('sha256', env.ADMIN_MIGRATION_TOKEN).update(raw).digest('base64url')
+  const handler = createEdgeAdminHandler({ kv, env, backupStorage: storage, forward, forwardToken: 'internal-only' })
+  await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': signature } })
+  let response = await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'correct horse battery staple' } })
+  const login = await response.json(), cookie = response.headers.get('set-cookie').split(';')[0], auth = { cookie, 'x-csrf-token': login.csrfToken }
+  response = await invoke(handler, '/admin/v1/console/templates', { headers: { cookie } })
+  const item = (await response.json()).items[0]
+  assert.deepEqual(item.preview, bundle.manifest.layout)
+  assert.equal(item.previewImage, 'data:image/png;base64,AQIDBA==')
+  const large = { templateVersion: 2, draft: { assets: [{ data: 'a'.repeat(800_000) }] } }
+  response = await invoke(handler, '/admin/v1/console/templates/tpl_preview/versions', { method: 'POST', body: large, headers: auth })
+  assert.equal(response.status, 200)
+  assert.deepEqual(forwardedBody, large)
+})

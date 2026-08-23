@@ -414,7 +414,20 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await service.require(access, { permission: 'template.read' })
       const response = await forwardAdmin('/templates', 'GET'), result = await response.json()
       const direct = await listValues(kv, 'te_dg_'), grouped = await listValues(kv, 'te_gg_')
-      result.items = (result.items || []).map(item => ({ ...item, authorizationCount: direct.filter(x => x.templateId === item.templateId && x.enabled !== false && !x.revokedAt).length + grouped.filter(x => x.templateId === item.templateId && x.enabled !== false && !x.revokedAt).length }))
+      result.items = await Promise.all((result.items || []).map(async item => {
+        let preview = item.preview || null, previewImage = item.previewImage || null
+        try {
+          const raw = await backupStorage?.getPackage(item.templateId, Number(item.latestVersion || 0))
+          const bundle = raw && JSON.parse(dec.decode(raw))
+          preview ||= bundle?.manifest?.layout || null
+          const asset = (bundle?.manifest?.assets || []).find(value => String(value.mimeType || '').startsWith('image/') && bundle.files?.[value.path])
+          if (asset) {
+            const encoded = String(bundle.files[asset.path]).replace(/-/g, '+').replace(/_/g, '/')
+            previewImage = `data:${asset.mimeType};base64,${encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')}`
+          }
+        } catch {}
+        return { ...item, preview, previewImage, authorizationCount: direct.filter(x => x.templateId === item.templateId && x.enabled !== false && !x.revokedAt).length + grouped.filter(x => x.templateId === item.templateId && x.enabled !== false && !x.revokedAt).length }
+      }))
       return json(result, response.status)
     }
     const legacyGrantUser = path.match(/^\/templates\/([^/]+)\/grant-user(?:\/([^/]+))?$/)
@@ -461,7 +474,11 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await service.audit(access.principal.adminId, 'GROUP_DELETE', 'group', groupDelete[1]); return new Response(null, { status: 204 })
     }
     const requirement = routePermission(path, method)
-    if (requirement && forward) { await service.require(access, requirement); const headers = new Headers(request.headers); headers.set('authorization', `Bearer ${forwardToken||env.ADMIN_TOKEN}`); return forward(new Request(request, { headers })) }
+    if (requirement && forward) {
+      await service.require(access, requirement)
+      const payload = ['GET', 'HEAD', 'DELETE'].includes(method) ? undefined : await bodyOf(request)
+      return forwardAdmin(path, method, payload)
+    }
     return json({ ok: false, code: 'NOT_FOUND' }, 404)
   } catch (error) { const problem = /** @type {any} */ (error); return json({ ok: false, code: problem.code || 'ADMIN_OPERATION_FAILED', ...(migrationAuthorized?{diagnostic:clean(problem.message||problem.name,160)}:{}) }, problem.status || 500) }
 }
