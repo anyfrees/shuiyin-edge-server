@@ -1603,25 +1603,10 @@ var importPublic = (k) => crypto.subtle.importKey("raw", unb64(k), { name: "Ed25
   "verify"
 ]);
 var signEd25519 = async (data, key2) => {
-  try {
-    return new Uint8Array(
-      await crypto.subtle.sign("Ed25519", await importPrivate(key2), data)
-    );
-  } catch {
-    return signAsync(data, unb64(key2).slice(-32));
-  }
+  return signAsync(data, unb64(key2).slice(-32));
 };
 var verifyEd25519 = async (signature, data, key2) => {
-  try {
-    return await crypto.subtle.verify(
-      "Ed25519",
-      await importPublic(key2),
-      signature,
-      data
-    );
-  } catch {
-    return verifyAsync(signature, data, unb64(key2));
-  }
+  return verifyAsync(signature, data, unb64(key2));
 };
 var importP256Private = (k) => crypto.subtle.importKey(
   "pkcs8",
