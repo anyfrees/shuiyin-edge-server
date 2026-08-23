@@ -758,6 +758,14 @@ var evaluateTemplateAccess = ({ template, subject, directGrant, memberships = []
 };
 
 // packages/template-package-core/src/runtime.js
+var pairedEntitlementEpoch = (templateEpoch, subjectEpoch) => {
+  const a = Math.max(0, Math.trunc(Number(templateEpoch) || 0));
+  const b = Math.max(0, Math.trunc(Number(subjectEpoch) || 0));
+  const sum = a + b;
+  const paired = sum * (sum + 1) / 2 + b;
+  if (!Number.isSafeInteger(paired)) throw fail("TEMPLATE_EPOCH_INVALID", 500);
+  return paired;
+};
 var fail = (code, status = 400) => Object.assign(new Error(code), { code, status });
 var safeId = (id) => /^tpl_[a-z0-9_-]{3,80}$/.test(String(id || ""));
 var noStore = {
@@ -837,7 +845,7 @@ var TemplateRuntimeService = class {
       ctx,
       access,
       version,
-      epoch: `${templateEpoch}:${subjectEpoch}`
+      epoch: pairedEntitlementEpoch(templateEpoch, subjectEpoch)
     };
   }
   async downloadToken(subject, { templateId, templateVersion }) {

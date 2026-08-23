@@ -527,6 +527,9 @@ test("Edge real handlers call EdgeOne Blob-compatible storage for runtime APIs",
     kv,
   );
   assert.equal(lease.status, 200);
+  const leaseBody = await lease.json();
+  assert.equal(typeof leaseBody.lease.entitlementEpoch, "number");
+  assert.equal(Number.isSafeInteger(leaseBody.lease.entitlementEpoch), true);
   const keys = await handleRequest(
     new Request("https://example.com/v2/public-keys"),
     runtimeEnv,
