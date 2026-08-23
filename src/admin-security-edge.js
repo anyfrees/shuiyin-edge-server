@@ -334,6 +334,10 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       for (const record of records) {
         if (!BACKUP_PREFIXES.some(prefix => String(record.name || '').startsWith(prefix)) || typeof record.value !== 'string') throw fail('BACKUP_PAYLOAD_INVALID', 400)
         if (record.value.length > 950_000) throw fail('BACKUP_PAYLOAD_INVALID', 400)
+        if (String(record.name).startsWith('admin:principal:')) {
+          const source=parse(record.value),mappedId=source?.username&&await kv.get(key('username',clean(source.username,80).toLowerCase()))
+          if(mappedId&&mappedId!==source.adminId){const previous=await service.principal(mappedId);if(previous){previous.username=`restore-retired-${String(mappedId).slice(-32)}`;previous.status='DISABLED';previous.authzEpoch=Number(previous.authzEpoch||0)+1;previous.updatedAt=Date.now();await Promise.all([put(kv,'principal',mappedId,previous),kv.put(key('username',previous.username),mappedId)])}}
+        }
         await kv.put(record.name, record.value)
       }
       await service.audit(access.principal.adminId, 'BACKUP_RESTORE_RECORDS', 'system', 'full', 'SUCCESS', { count: records.length })
@@ -345,7 +349,8 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       if (!backupStorage) throw fail('OBJECT_STORAGE_NOT_CONFIGURED', 503)
       const raw = new Uint8Array(await request.arrayBuffer()), expected = String(request.headers.get('x-content-sha256') || '')
       if (!raw.byteLength || !expected || !timingSafe(await byteDigest(raw), expected)) throw fail('BACKUP_PACKAGE_INVALID', 400)
-      if (await backupStorage.getPackage(restorePackage[1], Number(restorePackage[2]))) return json({ ok: true, alreadyPresent: true })
+      const existing=await backupStorage.getPackage(restorePackage[1], Number(restorePackage[2]))
+      if (existing) { if(!timingSafe(await byteDigest(existing),expected))throw fail('BACKUP_PACKAGE_CONFLICT',409);return json({ ok: true, alreadyPresent: true }) }
       await backupStorage.putPackage(restorePackage[1], Number(restorePackage[2]), raw)
       await service.audit(access.principal.adminId, 'BACKUP_RESTORE_PACKAGE', 'template', restorePackage[1], 'SUCCESS', { templateVersion: Number(restorePackage[2]), size: raw.byteLength })
       return json({ ok: true, restored: true }, 201)
@@ -384,7 +389,8 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     if(path==='/totp/begin'&&method==='POST')return json({ok:true,...await service.beginTotp(access.principal)})
     if(path==='/totp/enable'&&method==='POST')return json({ok:true,recoveryCodes:await service.enableTotp(access.principal,(await bodyOf(request)).token)})
     if (path === '/audit' && method === 'GET') { await service.require(access, { permission: 'audit.read' }); const entitlement=(await listValues(kv,'te_audit_')).map(x=>({event_id:x.eventId,actor_id:x.actorId||'admin',action:x.eventType||'ENTITLEMENT_EVENT',resource_type:x.templateId?'template':x.groupId?'group':x.subjectId?'subject':null,resource_id:x.templateId||x.groupId||x.subjectId||null,result:'SUCCESS',timestamp:x.timestamp,metadata:{templateVersion:x.templateVersion||null,reason:x.reason||null}}));let items=[...(await list(kv,'audit')), ...entitlement].sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0)).slice(0,200);if(!access.superAdmin)items=items.filter(x=>!x.resource_id||(x.resource_type==='template'&&access.templateScope.has(x.resource_id))||(x.resource_type==='group'&&access.groupScope.has(x.resource_id))||x.actor_id===access.principal.adminId);return json({ ok: true, items }) }
-    if (path === '/password/change' && method === 'POST') { const b=await bodyOf(request); if(!access.principal.passwordHash || !await service.passwordVerify(String(b.currentPassword||''),access.principal.passwordHash) || String(b.newPassword||'').length<12) throw fail('PASSWORD_CHANGE_DENIED',400); access.principal.passwordHash=await service.passwordHash(String(b.newPassword)); access.principal.authzEpoch++; access.principal.updatedAt=Date.now(); await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return json({ok:true}) }
+    if (path === '/audit' && method === 'DELETE') { if(!access.superAdmin)throw fail('ADMIN_SCOPE_DENIED',403);const names=[...await listNames(kv,'admin:audit:'),...await listNames(kv,'te_audit_')];for(const name of names)await kv.delete(name);await service.audit(access.principal.adminId,'AUDIT_CLEAR','system','audit','SUCCESS',{deleted:names.length});return json({ok:true,deleted:names.length}) }
+    if (path === '/password/change' && method === 'POST') { const b=await bodyOf(request),hasPassword=Boolean(access.principal.passwordHash),verified=hasPassword?await service.passwordVerify(String(b.currentPassword||''),access.principal.passwordHash):access.session.authMethod==='PASSKEY'; if(!verified || String(b.newPassword||'').length<12) throw fail('PASSWORD_CHANGE_DENIED',400); access.principal.passwordHash=await service.passwordHash(String(b.newPassword)); access.principal.authzEpoch++; access.principal.updatedAt=Date.now(); await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); await service.audit(access.principal.adminId,hasPassword?'PASSWORD_CHANGE':'PASSWORD_SET','admin',access.principal.adminId); return json({ok:true}) }
     if (path === '/password' && method === 'DELETE') { if (!(access.principal.passkeyIds || []).length) throw fail('PASSKEY_REQUIRED',409); access.principal.passwordHash=null; access.principal.authzEpoch++; await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return new Response(null,{status:204,headers:{'Set-Cookie':'jilu_admin_session=; Path=/admin/; HttpOnly; SameSite=Strict; Max-Age=0; Secure'}}) }
     const forwardAdmin = async (targetPath, targetMethod = method, payload) => {
       if (!forward) throw fail('ADMIN_ROUTE_UNAVAILABLE', 503)

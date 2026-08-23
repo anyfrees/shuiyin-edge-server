@@ -49,8 +49,24 @@ test('signed migration preserves an Argon2 password and issues a CSRF-bound admi
   await kv.put('te_audit_0000000000000002_evt_test',JSON.stringify({eventId:'evt_test',actorId:'adm_test',eventType:'GROUP_CREATE',groupId:'grp_test',timestamp:2}))
   response=await invoke(handler,'/admin/v1/console/audit',{headers:{cookie:sessionCookie}})
   assert.equal(response.status,200);assert.equal((await response.json()).items.some(item=>item.event_id==='evt_test'&&item.resource_type==='group'&&item.resource_id==='grp_test'),true)
+  response=await invoke(handler,'/admin/v1/console/audit',{method:'DELETE',body:{},headers:mutationHeaders})
+  assert.equal(response.status,200);assert.equal((await response.json()).deleted>0,true);assert.equal(await kv.get('te_audit_0000000000000002_evt_test'),null)
   response = await invoke(handler, '/admin/v1/console/auth/logout', { method: 'POST', body: {}, headers: { cookie: sessionCookie, 'x-csrf-token': login.csrfToken } })
   assert.equal(response.status, 204)
+})
+
+test('passkey-authenticated Edge administrator can set a new password after removal', async () => {
+  const kv = new Kv(), env = { ADMIN_MIGRATION_TOKEN: 'migration-secret', ADMIN_CREDENTIAL_KEY: 'test-admin-credential-key-at-least-32-bytes', ENVIRONMENT: 'test' }
+  const raw = await migration('temporary password 123'), signature = createHmac('sha256', env.ADMIN_MIGRATION_TOKEN).update(raw).digest('base64url'), handler = createEdgeAdminHandler({ kv, env })
+  await invoke(handler, '/admin/v1/console/migration/import', { method: 'POST', body: raw, headers: { 'x-migration-signature': signature } })
+  let response = await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'temporary password 123' } })
+  const login = await response.json(), cookie = response.headers.get('set-cookie').split(';')[0]
+  const principal = JSON.parse(await kv.get('admin:principal:adm_test')); principal.passwordHash = null; await kv.put('admin:principal:adm_test', JSON.stringify(principal))
+  const sessionName = [...kv.data.keys()].find(name => name.startsWith('admin:session:')), session = JSON.parse(await kv.get(sessionName)); session.authMethod = 'PASSKEY'; session.authzEpoch = principal.authzEpoch; await kv.put(sessionName, JSON.stringify(session))
+  response = await invoke(handler, '/admin/v1/console/password/change', { method: 'POST', body: { newPassword: 'new secure password 123' }, headers: { cookie, 'x-csrf-token': login.csrfToken } })
+  assert.equal(response.status, 200)
+  response = await invoke(handler, '/admin/v1/console/auth/password', { method: 'POST', body: { username: 'admin', password: 'new secure password 123' } })
+  assert.equal(response.status, 200)
 })
 
 test('migration import fails closed on a bad signature and is idempotent', async () => {
@@ -112,6 +128,8 @@ test('super admin exports and restores chunked records and template packages', a
   assert.equal(response.status, 200); assert.ok(await kv.get('subject_sub_backup'))
   response = await handler(new Request('https://api.example/admin/v1/console/backup/restore/packages/tpl_backup/1', { method: 'POST', headers: { ...auth, 'content-type': 'application/octet-stream', 'x-content-sha256': packageHash }, body: packageBytes }))
   assert.equal(response.status, 201); assert.deepEqual([...await storage.getPackage('tpl_backup', 1)], [1, 2, 3, 4])
+  response = await handler(new Request('https://api.example/admin/v1/console/backup/restore/packages/tpl_backup/1', { method: 'POST', headers: { ...auth, 'content-type': 'application/octet-stream', 'x-content-sha256': await crypto.subtle.digest('SHA-256', new Uint8Array([9])).then(x=>Buffer.from(x).toString('base64url')) }, body: new Uint8Array([9]) }))
+  assert.equal(response.status, 409); assert.equal((await response.json()).code, 'BACKUP_PACKAGE_CONFLICT')
 })
 
 test('admin template listing restores package previews and large mutations are buffered before forwarding', async () => {
