@@ -633,7 +633,7 @@ var EdgeOneBlobTemplateStorage = class extends Contract {
       const meta = JSON.parse(await this.kv.get(`te_pkg_${id}_${v}_meta`) || "null");
       if (meta) {
         const chunks = await Promise.all(Array.from({ length: Number(meta.total) }, (_, index) => this.kv.get(`te_pkg_${id}_${v}_${index}`)));
-        if (chunks.every((chunk) => typeof chunk === "string")) return unb64(chunks.join(""));
+        if (chunks.every((chunk) => typeof chunk === "string")) return meta.encoding === "utf8" ? enc2.encode(chunks.join("")) : unb64(chunks.join(""));
       }
     }
     const x = await this.store.get(this.objectRef(id, v), { consistency: "strong" });
@@ -1308,20 +1308,23 @@ var TemplatePublishService = class {
     const kv = this.repository.kv, meta = kv && JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null");
     if (!meta || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || meta.actorId !== actorId || this.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail2("PUBLISH_PREPARE_INVALID", 404);
     const manifest = meta.manifest, draft = version.draft || {}, layoutBytes = enc2.encode(canonical(draft.layout)), files = { "layout.json": b64(layoutBytes) };
-    for (const asset of draft.assets || []) files[asset.path] = b64(bytes(asset.bytes ?? asset.data));
+    for (const asset of draft.assets || []) {
+      const source = asset.bytes ?? asset.data;
+      files[asset.path] = typeof source === "string" ? source.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : b64(bytes(source));
+    }
     manifest.artifactSha256 = null;
     const unsignedArtifact = enc2.encode(canonical({ manifest, files }));
     manifest.artifactSha256 = await sha(unsignedArtifact);
-    const packageBytes = enc2.encode(canonical({ manifest, files }));
+    const packageJson = canonical({ manifest, files }), packageBytes = enc2.encode(packageJson);
     if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
-    const encoded = b64(packageBytes), chunkSize = 90000, total = Math.ceil(encoded.length / chunkSize), index = Number(chunkIndex);
+    const encoded = packageJson, chunkSize = 80000, total = Math.ceil(encoded.length / chunkSize), index = Number(chunkIndex);
     if (!Number.isInteger(index) || index < 0 || index > total) throw fail2("PUBLISH_CHUNK_INVALID", 400);
     if (index < total) {
       await kv.put(`te_pkg_${templateId}_${templateVersion}_${index}`, encoded.slice(index * chunkSize, (index + 1) * chunkSize));
       await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ ...meta, manifest, total, size: packageBytes.byteLength, nextIndex: index + 1 }));
       return { ok: true, prepared: true, nextIndex: index + 1, total };
     }
-    await kv.put(`te_pkg_${templateId}_${templateVersion}_meta`, JSON.stringify({ objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`, total, size: packageBytes.byteLength, createdAt: this.now() }));
+    await kv.put(`te_pkg_${templateId}_${templateVersion}_meta`, JSON.stringify({ objectRef: this.storage.objectRef?.(templateId, Number(templateVersion)) || `template:${templateId}:v${templateVersion}`, total, size: packageBytes.byteLength, encoding: "utf8", createdAt: this.now() }));
     const publishedAt = this.now(), opId = this.operationId();
     const published = {
       ...version,
