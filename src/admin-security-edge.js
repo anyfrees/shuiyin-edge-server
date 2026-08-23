@@ -1,4 +1,6 @@
 import { argon2idAsync } from '@noble/hashes/argon2.js'
+import { pbkdf2Async } from '@noble/hashes/pbkdf2.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { ADMIN_ROLES, evaluateAdminAccess, validateDelegation } from './admin-authorization.js'
 
 const enc = new TextEncoder()
@@ -56,8 +58,7 @@ const pbkdf2Hash = async (password, encodedHash = '') => {
     if (!match) throw new Error('PBKDF2_HASH_INVALID')
     iterations = Number(match[1]); salt = fromB64u(match[2]); expected = match[3]
   } else { salt = new Uint8Array(16); crypto.getRandomValues(salt) }
-  const material = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits'])
-  const result = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, material, (expected ? fromB64u(expected).length : 32) * 8))
+  const result = await pbkdf2Async(sha256, enc.encode(String(password)), salt, { c: iterations, dkLen: expected ? fromB64u(expected).length : 32, asyncTick: 10 })
   const encoded = b64u(result)
   return encodedHash ? timingSafe(encoded, expected) : `$pbkdf2-sha256$i=${iterations}$${b64u(salt)}$${encoded}`
 }
@@ -149,8 +150,13 @@ export class EdgeAdminSecurityService {
     if (!/^[a-z0-9._-]{3,80}$/.test(username) || password.length < 12 || roles.some(x => !ADMIN_ROLES[x])) throw fail('ADMIN_INPUT_INVALID', 400)
     if (!bootstrap && !validateDelegation(actor, assignment)) throw fail('PRIVILEGE_AMPLIFICATION_DENIED')
     if (await this.byUsername(username)) throw fail('ADMIN_USERNAME_EXISTS', 409)
-    const now = this.now(), admin = { adminId: `adm_${random(18)}`, username, displayName: clean(input.displayName || username, 80), status: 'ACTIVE', authzEpoch: 1, totpSecret: null, totpEnabled: false, passwordHash: await this.passwordHash(password), roles, templateScopes: assignment.templateScopes, groupScopes: assignment.groupScopes, passkeyIds: [], createdAt: now, updatedAt: now }
-    await Promise.all([put(this.kv, 'principal', admin.adminId, admin), this.kv.put(key('username', username), admin.adminId)]); await this.audit(actor?.principal?.adminId || admin.adminId, bootstrap ? 'ADMIN_BOOTSTRAP' : 'ADMIN_CREATE', 'admin', admin.adminId); return publicPrincipal(admin)
+    const now = this.now(); let passwordHash
+    try { passwordHash = await this.passwordHash(password) } catch { throw fail('ADMIN_CREATE_HASH_FAILED', 500) }
+    const admin = { adminId: `adm_${random(18)}`, username, displayName: clean(input.displayName || username, 80), status: 'ACTIVE', authzEpoch: 1, totpSecret: null, totpEnabled: false, passwordHash, roles, templateScopes: assignment.templateScopes, groupScopes: assignment.groupScopes, passkeyIds: [], createdAt: now, updatedAt: now }
+    try { await put(this.kv, 'principal', admin.adminId, admin) } catch { throw fail('ADMIN_CREATE_PRINCIPAL_WRITE_FAILED', 500) }
+    try { await this.kv.put(key('username', username), admin.adminId) } catch { await remove(this.kv, 'principal', admin.adminId).catch(() => {}); throw fail('ADMIN_CREATE_USERNAME_WRITE_FAILED', 500) }
+    try { await this.audit(actor?.principal?.adminId || admin.adminId, bootstrap ? 'ADMIN_BOOTSTRAP' : 'ADMIN_CREATE', 'admin', admin.adminId) } catch {}
+    return publicPrincipal(admin)
   }
   async updatePrincipal(actor, targetId, input) {
     await this.require(actor, { permission: 'admin.manage' }); const target = await this.principal(targetId); if (!target) throw fail('ADMIN_NOT_FOUND', 404)
