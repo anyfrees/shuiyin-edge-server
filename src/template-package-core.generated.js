@@ -1267,24 +1267,19 @@ var TemplatePublishService = class {
     if (!version) throw fail2("TEMPLATE_VERSION_NOT_FOUND", 404);
     if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
     this.validateTemplate(template);
-    const key2 = this.activeKey(), draft = version.draft || {};
-    const built = await this.builder({
-      templateId,
-      templateVersion: Number(templateVersion),
-      name: template.name,
-      description: template.description,
-      layout: draft.layout,
-      assets: (draft.assets || []).map((a) => ({ ...a, bytes: bytes(a.bytes ?? a.data) })),
-      createdAt: version.createdAt || 0,
-      keyId: key2.keyId,
-      privateKey: key2.privateKey,
-      algorithm: key2.algorithm || "Ed25519"
-    });
-    const encoded = b64(built.bytes), prepareId = crypto.randomUUID().replace(/-/g, ""), chunkSize = 90000, total = Math.ceil(encoded.length / chunkSize), kv = this.repository.kv;
+    const key2 = this.activeKey(), draft = version.draft || {}, layoutBytes = enc2.encode(canonical(draft.layout)), files = { "layout.json": b64(layoutBytes) }, entries = [];
+    for (const asset of [...(draft.assets || [])].sort((a, b) => a.path.localeCompare(b.path))) {
+      const assetBytes = bytes(asset.bytes ?? asset.data);
+      files[asset.path] = b64(assetBytes);
+      entries.push({ id: asset.id, path: asset.path, sha256: await sha(assetBytes), mimeType: asset.mimeType, size: assetBytes.length });
+    }
+    const content = { layout: { path: "layout.json", sha256: await sha(layoutBytes), size: layoutBytes.length }, assets: entries }, contentDigest = await sha(canonical(content));
+    const manifest = { format: "jilu-template", formatVersion: 2, templateId, templateVersion: Number(templateVersion), name: template.name, description: template.description, layout: content.layout, assets: entries, rendererCompatibility: { minimumRendererVersion: 2 }, createdAt: version.createdAt || 0, contentDigest, artifactSha256: null, signature: { algorithm: key2.algorithm || "Ed25519", keyId: key2.keyId, value: "" } };
+    manifest.signature.value = b64(await signDetached(manifest.signature.algorithm, signaturePayload(manifest), key2.privateKey));
+    const prepareId = crypto.randomUUID().replace(/-/g, ""), kv = this.repository.kv;
     if (!kv) throw fail2("PERSISTENT_STORAGE_NOT_CONFIGURED", 503);
-    await Promise.all(Array.from({ length: total }, (_, index) => kv.put(`te_prepared_${prepareId}_${index}`, encoded.slice(index * chunkSize, (index + 1) * chunkSize))));
-    await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, total, size: built.bytes.byteLength, createdAt: this.now() }));
-    return { prepareId, size: built.bytes.byteLength, total };
+    await kv.put(`te_prepared_${prepareId}_meta`, JSON.stringify({ prepareId, templateId, templateVersion: Number(templateVersion), actorId, manifest, createdAt: this.now() }));
+    return { prepareId };
   }
   async commitPrepared({ templateId, templateVersion, prepareId, actorId = "admin", requestId = "" }) {
     if (!this.storage) throw fail2("OBJECT_STORAGE_NOT_CONFIGURED", 503);
@@ -1295,16 +1290,16 @@ var TemplatePublishService = class {
     if (version.status !== "DRAFT") throw fail2("TEMPLATE_VERSION_NOT_DRAFT", 409);
     const kv = this.repository.kv, meta = kv && JSON.parse(await kv.get(`te_prepared_${prepareId}_meta`) || "null");
     if (!meta || meta.templateId !== templateId || Number(meta.templateVersion) !== Number(templateVersion) || meta.actorId !== actorId || this.now() - Number(meta.createdAt || 0) > 30 * 60_000) throw fail2("PUBLISH_PREPARE_INVALID", 404);
-    const chunks = await Promise.all(Array.from({ length: Number(meta.total) }, (_, index) => kv.get(`te_prepared_${prepareId}_${index}`)));
-    if (chunks.some((chunk) => typeof chunk !== "string")) throw fail2("PUBLISH_PREPARE_INCOMPLETE", 409);
-    const packageBytes = bytes(chunks.join(""));
-    let manifest;
-    try { manifest = JSON.parse(dec.decode(packageBytes)).manifest; } catch { throw fail2("TEMPLATE_PACKAGE_INVALID", 400); }
-    if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion) || packageBytes.byteLength !== Number(meta.size)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
+    const manifest = meta.manifest, draft = version.draft || {}, layoutBytes = enc2.encode(canonical(draft.layout)), files = { "layout.json": b64(layoutBytes) };
+    for (const asset of draft.assets || []) files[asset.path] = b64(bytes(asset.bytes ?? asset.data));
+    const unsignedArtifact = enc2.encode(canonical({ manifest, files }));
+    manifest.artifactSha256 = await sha(unsignedArtifact);
+    const packageBytes = enc2.encode(canonical({ manifest, files }));
+    if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
     const existing = await this.storage.getPackage(templateId, Number(templateVersion));
     if (!existing) await this.storage.putPackage(templateId, Number(templateVersion), packageBytes);
     else if (existing.byteLength !== packageBytes.byteLength) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
-    const publishedAt = this.now(), draft = version.draft || {}, opId = this.operationId();
+    const publishedAt = this.now(), opId = this.operationId();
     const published = {
       ...version,
       status: "PUBLISHED",
@@ -1329,7 +1324,7 @@ var TemplatePublishService = class {
       audit: { eventId: `evt_${crypto.randomUUID().replace(/-/g, "")}`, eventType: "TEMPLATE_VERSION_PUBLISHED", actorId, templateId, templateVersion: Number(templateVersion), contentDigest: manifest.contentDigest, artifactSha256: manifest.artifactSha256, timestamp: publishedAt, operationId: opId, requestId: String(requestId).slice(0, 128) },
       operation: { operationId: opId, templateId, templateVersion: Number(templateVersion), status: "COMPLETED", actorId, requestId: String(requestId).slice(0, 128), objectRef: published.internalObjectRef, createdAt: publishedAt, updatedAt: publishedAt }
     });
-    await Promise.all([kv.delete(`te_prepared_${prepareId}_meta`), ...chunks.map((_, index) => kv.delete(`te_prepared_${prepareId}_${index}`))]);
+    await kv.delete(`te_prepared_${prepareId}_meta`);
     return this.response(published);
   }
   validateTemplate(t) {
