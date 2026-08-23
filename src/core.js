@@ -68,7 +68,6 @@ const LOCATION_RATE_LIMIT = 30;
 const locationRateClients = new Map();
 const authRateClients = new Map();
 const templateHandlers = new WeakMap();
-const adminHandlers = new WeakMap();
 const captureHandlers = new WeakMap();
 const registrationHandlers = new WeakMap();
 const verificationHandlers = new WeakMap();
@@ -823,17 +822,14 @@ export async function handleRequest(request, env, kv) {
         url.pathname,
       );
     if (url.pathname.startsWith("/admin/v1/console")) {
-      let admin = adminHandlers.get(env);
-      if (!admin) {
-        admin = createEdgeAdminHandler({
-          kv,
-          env,
-          forward: handlers.entitlement,
-          forwardToken: handlers.adminToken,
-          backupStorage: handlers.storage,
-        });
-        adminHandlers.set(env, admin);
-      }
+      const admin = createEdgeAdminHandler({
+        kv,
+        env,
+        forward: handlers.entitlement,
+        forwardToken: handlers.adminToken,
+        backupStorage: handlers.storage,
+        waitUntil: env.EDGE_WAIT_UNTIL,
+      });
       return withHeaders(await admin(request), headers);
     }
     return (runtime ? handlers.runtime : handlers.entitlement)(request);

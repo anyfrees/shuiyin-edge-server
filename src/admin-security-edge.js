@@ -256,7 +256,7 @@ const packageIdentity = objectRef => {
 }
 const byteDigest = async value => b64u(new Uint8Array(await crypto.subtle.digest('SHA-256', value)))
 
-export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupStorage }) => async request => {
+export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupStorage, waitUntil }) => async request => {
   const service = new EdgeAdminSecurityService({ kv, env }), url = new URL(request.url), path = url.pathname.replace(/^\/admin\/v1\/console/, ''), method = request.method
   let migrationAuthorized=false
   try {
@@ -422,6 +422,30 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
         await Promise.all([kv.delete(`${prefix}_meta`), ...chunks.map((_, index) => kv.delete(`${prefix}_${index}`))])
       }
       return response
+    }
+    const asyncPublish = path.match(/^\/templates\/([^/]+)\/versions\/(\d+)\/publish-async$/)
+    if (asyncPublish && method === 'POST') {
+      const templateId = decodeURIComponent(asyncPublish[1]), templateVersion = Number(asyncPublish[2])
+      await service.require(access, { permission: 'template.publish', templateId })
+      if (typeof waitUntil !== 'function') throw fail('ASYNC_PUBLISH_UNAVAILABLE', 503)
+      const jobId = crypto.randomUUID(), key = `admin_publish_job_${jobId}`
+      await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: 'PENDING', createdAt: Date.now() }))
+      waitUntil((async () => {
+        try {
+          const response = await forwardAdmin(`/templates/${encodeURIComponent(templateId)}/versions/${templateVersion}/publish`, 'POST', {})
+          const result = await response.clone().json().catch(() => ({}))
+          await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: response.ok ? 'SUCCEEDED' : 'FAILED', code: response.ok ? null : result.code || `HTTP_${response.status}`, completedAt: Date.now() }))
+        } catch (error) {
+          await kv.put(key, JSON.stringify({ jobId, templateId, templateVersion, adminId: access.principal.adminId, status: 'FAILED', code: error?.code || 'PUBLISH_JOB_FAILED', completedAt: Date.now() }))
+        }
+      })())
+      return json({ ok: true, jobId, status: 'PENDING' }, 202)
+    }
+    const publishJob = path.match(/^\/publish-jobs\/([a-f0-9-]{20,80})$/)
+    if (publishJob && method === 'GET') {
+      const job = parse(await kv.get(`admin_publish_job_${publishJob[1]}`))
+      if (!job || job.adminId !== access.principal.adminId) throw fail('PUBLISH_JOB_NOT_FOUND', 404)
+      return json({ ok: true, job })
     }
     const subjectForPublicId = async publicId => {
       const normalized = decodeURIComponent(publicId).toUpperCase(), subjectId = await kv.get(`public_${normalized}`), subject = subjectId && parse(await kv.get(`subject_${subjectId}`))
