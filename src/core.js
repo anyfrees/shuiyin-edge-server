@@ -766,7 +766,7 @@ export async function handleRequest(request, env, kv) {
         storage = env.TEMPLATE_OBJECTS
           ? new CloudflareR2TemplateStorage(env.TEMPLATE_OBJECTS)
           : env.TEMPLATE_BLOB
-            ? new EdgeOneBlobTemplateStorage(env.TEMPLATE_BLOB)
+            ? new EdgeOneBlobTemplateStorage(env.TEMPLATE_BLOB, kv)
             : null,
         authenticate = async (req) =>
           (await identities.authenticate(bearer(req))).subject,

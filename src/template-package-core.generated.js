@@ -609,17 +609,33 @@ var CloudflareR2TemplateStorage = class extends Contract {
   }
 };
 var EdgeOneBlobTemplateStorage = class extends Contract {
-  constructor(store) {
+  constructor(store, kv = null) {
     super();
     if (!store) throw failure("OBJECT_STORAGE_NOT_CONFIGURED");
     this.store = store;
+    this.kv = kv;
   }
   async putPackage(id, v, b) {
     const k = this.objectRef(id, v);
+    if (this.kv) {
+      const metaKey = `te_pkg_${id}_${v}_meta`;
+      if (await this.kv.get(metaKey)) throw failure("TEMPLATE_VERSION_CONFLICT");
+      const encoded = b64(b), chunkSize = 90000, total = Math.ceil(encoded.length / chunkSize);
+      await Promise.all(Array.from({ length: total }, (_, index) => this.kv.put(`te_pkg_${id}_${v}_${index}`, encoded.slice(index * chunkSize, (index + 1) * chunkSize))));
+      await this.kv.put(metaKey, JSON.stringify({ objectRef: k, total, size: b.byteLength, createdAt: Date.now() }));
+      return k;
+    }
     await this.store.set(k, b, { onlyIfNew: true });
     return k;
   }
   async getPackage(id, v) {
+    if (this.kv) {
+      const meta = JSON.parse(await this.kv.get(`te_pkg_${id}_${v}_meta`) || "null");
+      if (meta) {
+        const chunks = await Promise.all(Array.from({ length: Number(meta.total) }, (_, index) => this.kv.get(`te_pkg_${id}_${v}_${index}`)));
+        if (chunks.every((chunk) => typeof chunk === "string")) return unb64(chunks.join(""));
+      }
+    }
     const x = await this.store.get(this.objectRef(id, v), { consistency: "strong" });
     return x ? new Uint8Array(await x.arrayBuffer?.() || x) : null;
   }
@@ -631,6 +647,10 @@ var EdgeOneBlobTemplateStorage = class extends Contract {
     return x ? new Uint8Array(await x.arrayBuffer?.() || x) : null;
   }
   async deletePackage(id, v) {
+    if (this.kv) {
+      const meta = JSON.parse(await this.kv.get(`te_pkg_${id}_${v}_meta`) || "null");
+      if (meta) await Promise.all([this.kv.delete(`te_pkg_${id}_${v}_meta`), ...Array.from({ length: Number(meta.total) }, (_, index) => this.kv.delete(`te_pkg_${id}_${v}_${index}`))]);
+    }
     return this.store.delete(this.objectRef(id, v));
   }
   async exists(id, v) {
@@ -1293,9 +1313,7 @@ var TemplatePublishService = class {
     manifest.artifactSha256 = await sha(unsignedArtifact);
     const packageBytes = enc2.encode(canonical({ manifest, files }));
     if (manifest?.templateId !== templateId || Number(manifest?.templateVersion) !== Number(templateVersion)) throw fail2("TEMPLATE_PACKAGE_INVALID", 400);
-    const existing = await this.storage.getPackage(templateId, Number(templateVersion));
-    if (!existing) await this.storage.putPackage(templateId, Number(templateVersion), packageBytes);
-    else if (existing.byteLength !== packageBytes.byteLength) throw fail2("TEMPLATE_VERSION_CONFLICT", 409);
+    await this.storage.putPackage(templateId, Number(templateVersion), packageBytes);
     const publishedAt = this.now(), opId = this.operationId();
     const published = {
       ...version,
