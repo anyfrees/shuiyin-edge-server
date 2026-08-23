@@ -447,6 +447,13 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       if (!job || job.adminId !== access.principal.adminId) throw fail('PUBLISH_JOB_NOT_FOUND', 404)
       return json({ ok: true, job })
     }
+    if (path === '/publish-jobs' && method === 'GET') {
+      const items = (await listValues(kv, 'admin_publish_job_'))
+        .filter(job => job?.adminId === access.principal.adminId)
+        .sort((a, b) => Number(b.createdAt || b.completedAt || 0) - Number(a.createdAt || a.completedAt || 0))
+        .slice(0, 20)
+      return json({ ok: true, items })
+    }
     const subjectForPublicId = async publicId => {
       const normalized = decodeURIComponent(publicId).toUpperCase(), subjectId = await kv.get(`public_${normalized}`), subject = subjectId && parse(await kv.get(`subject_${subjectId}`))
       if (!subject) throw fail('SUBJECT_NOT_FOUND', 404)
