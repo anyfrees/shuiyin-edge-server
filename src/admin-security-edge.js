@@ -114,7 +114,22 @@ export class EdgeAdminSecurityService {
     return { principal: admin, roles: new Set(roles), permissions: permissionsFor(roles), superAdmin, templateScope: new Set(admin.templateScopes || []), groupScope: new Set(admin.groupScopes || []) }
   }
   async require(access, requirement) { if (!evaluateAdminAccess(access, requirement)) { await this.audit(access.principal.adminId, 'AUTHORIZATION_DENIED', requirement.templateId ? 'template' : requirement.groupId ? 'group' : 'permission', requirement.templateId || requirement.groupId || requirement.permission, 'DENIED', { permission: requirement.permission }); throw fail('ADMIN_SCOPE_DENIED') } return access }
-  async passwordHash(password) { return pbkdf2Hash(password) }
+  async passwordHash(password) {
+    const pepper = String(this.env.ADMIN_CREDENTIAL_KEY || '')
+    if (pepper.length < 16) throw fail('ADMIN_CREDENTIAL_KEY_REQUIRED', 500)
+    const salt = random(16)
+    return `$hmac-sha256$v=1$${salt}$${await hmac(pepper, `${salt}\u0000${String(password)}`)}`
+  }
+  async passwordVerify(password, encodedHash) {
+    const value = String(encodedHash || '')
+    if (value.startsWith('$hmac-sha256$')) {
+      const match = value.match(/^\$hmac-sha256\$v=1\$([^$]+)\$([^$]+)$/), pepper = String(this.env.ADMIN_CREDENTIAL_KEY || '')
+      if (!match || pepper.length < 16) return false
+      return timingSafe(await hmac(pepper, `${match[1]}\u0000${String(password)}`), match[2])
+    }
+    if (value.startsWith('$pbkdf2-sha256$')) return pbkdf2Hash(String(password), value)
+    return argonHash(String(password), value)
+  }
   async issueSession(admin, method) {
     const token = random(32), csrf = random(24), now = this.now(), sessionHash = await digest(token), expiresAt = now + Number(this.env.ADMIN_SESSION_MS || 8 * 60 * 60 * 1000)
     await put(this.kv, 'session', sessionHash, { sessionHash, adminId: admin.adminId, csrfHash: await digest(csrf), authMethod: method, authzEpoch: admin.authzEpoch, createdAt: now, expiresAt, revokedAt: null, lastSeenAt: now }, { expirationTtl: Math.ceil((expiresAt - now) / 1000) + 60 })
@@ -132,14 +147,14 @@ export class EdgeAdminSecurityService {
   async passwordLogin(input) {
     const admin = await this.byUsername(input.username)
     let valid = false
-    try { valid = Boolean(admin?.passwordHash) && await (admin.passwordHash.startsWith('$pbkdf2-sha256$') ? pbkdf2Hash(String(input.password || ''), admin.passwordHash) : argonHash(String(input.password || ''), admin.passwordHash)) === true } catch {}
+    try { valid = Boolean(admin?.passwordHash) && await this.passwordVerify(String(input.password || ''), admin.passwordHash) === true } catch {}
     if (!valid || admin.status !== 'ACTIVE') { await this.audit(null, 'ADMIN_LOGIN_FAILURE', '', '', 'DENIED'); throw fail('ADMIN_LOGIN_FAILED', 401) }
     if (admin.totpEnabled) { if (!String(input.totp || '').trim()) throw fail('TOTP_REQUIRED', 428); if (!await this.verifyTotp(await this.open(admin.totpSecret), input.totp)) throw fail('ADMIN_LOGIN_FAILED', 401) }
     const method = admin.totpEnabled ? 'PASSWORD_TOTP' : 'PASSWORD'; await this.audit(admin.adminId, 'ADMIN_LOGIN_SUCCESS', '', '', 'SUCCESS', { method }); return this.issueSession(admin, method)
   }
   async recoveryLogin(input) {
     const admin = await this.byUsername(input.username); let valid = false
-    try { valid = Boolean(admin?.passwordHash) && await (admin.passwordHash.startsWith('$pbkdf2-sha256$') ? pbkdf2Hash(String(input.password || ''), admin.passwordHash) : argonHash(String(input.password || ''), admin.passwordHash)) === true } catch {}
+    try { valid = Boolean(admin?.passwordHash) && await this.passwordVerify(String(input.password || ''), admin.passwordHash) === true } catch {}
     const codeHash = await digest(String(input.recoveryCode || '').toUpperCase()), code = admin && await get(this.kv, 'recovery', codeHash)
     if (!valid || !code || code.adminId !== admin.adminId || code.usedAt) throw fail('ADMIN_LOGIN_FAILED', 401)
     code.usedAt = this.now(); await put(this.kv, 'recovery', codeHash, code); await this.audit(admin.adminId, 'RECOVERY_CODE_USE', 'admin', admin.adminId); return this.issueSession(admin, 'PASSWORD_RECOVERY')
@@ -369,7 +384,7 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
     if(path==='/totp/begin'&&method==='POST')return json({ok:true,...await service.beginTotp(access.principal)})
     if(path==='/totp/enable'&&method==='POST')return json({ok:true,recoveryCodes:await service.enableTotp(access.principal,(await bodyOf(request)).token)})
     if (path === '/audit' && method === 'GET') { await service.require(access, { permission: 'audit.read' }); const entitlement=(await listValues(kv,'te_audit_')).map(x=>({event_id:x.eventId,actor_id:x.actorId||'admin',action:x.eventType||'ENTITLEMENT_EVENT',resource_type:x.templateId?'template':x.groupId?'group':x.subjectId?'subject':null,resource_id:x.templateId||x.groupId||x.subjectId||null,result:'SUCCESS',timestamp:x.timestamp,metadata:{templateVersion:x.templateVersion||null,reason:x.reason||null}}));let items=[...(await list(kv,'audit')), ...entitlement].sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0)).slice(0,200);if(!access.superAdmin)items=items.filter(x=>!x.resource_id||(x.resource_type==='template'&&access.templateScope.has(x.resource_id))||(x.resource_type==='group'&&access.groupScope.has(x.resource_id))||x.actor_id===access.principal.adminId);return json({ ok: true, items }) }
-    if (path === '/password/change' && method === 'POST') { const b=await bodyOf(request); if(!access.principal.passwordHash || !await argonHash(String(b.currentPassword||''),access.principal.passwordHash) || String(b.newPassword||'').length<12) throw fail('PASSWORD_CHANGE_DENIED',400); access.principal.passwordHash=await service.passwordHash(String(b.newPassword)); access.principal.authzEpoch++; access.principal.updatedAt=Date.now(); await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return json({ok:true}) }
+    if (path === '/password/change' && method === 'POST') { const b=await bodyOf(request); if(!access.principal.passwordHash || !await service.passwordVerify(String(b.currentPassword||''),access.principal.passwordHash) || String(b.newPassword||'').length<12) throw fail('PASSWORD_CHANGE_DENIED',400); access.principal.passwordHash=await service.passwordHash(String(b.newPassword)); access.principal.authzEpoch++; access.principal.updatedAt=Date.now(); await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return json({ok:true}) }
     if (path === '/password' && method === 'DELETE') { if (!(access.principal.passkeyIds || []).length) throw fail('PASSKEY_REQUIRED',409); access.principal.passwordHash=null; access.principal.authzEpoch++; await put(kv,'principal',access.principal.adminId,access.principal); await service.revokeAll(access.principal.adminId); return new Response(null,{status:204,headers:{'Set-Cookie':'jilu_admin_session=; Path=/admin/; HttpOnly; SameSite=Strict; Max-Age=0; Secure'}}) }
     const forwardAdmin = async (targetPath, targetMethod = method, payload) => {
       if (!forward) throw fail('ADMIN_ROUTE_UNAVAILABLE', 503)
