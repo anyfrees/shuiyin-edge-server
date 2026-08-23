@@ -83,8 +83,10 @@ var KvTemplateEntitlementRepository = class {
     try {
       await this.kv.put(index, "1");
     } catch (error) {
-      await this.write(k, { ...x, enabled: false, revokedAt: Date.now(), revokedBy: "INFRASTRUCTURE_ROLLBACK" }).catch(() => {});
-      await this.kv.delete?.(index).catch(() => {});
+      await this.write(k, { ...x, enabled: false, revokedAt: Date.now(), revokedBy: "INFRASTRUCTURE_ROLLBACK" }).catch(() => {
+      });
+      await this.kv.delete?.(index).catch(() => {
+      });
       throw error;
     }
     return x;
@@ -514,28 +516,13 @@ var handle = async ({
               {
                 enabled: body.template?.enabled !== false,
                 lifecycleStatus: "ACTIVE",
-                deletedAt: null,
-                latestVersion: Number(draft.templateVersion),
-                publishedAt: Number(publishedVersion.publishedAt) || Date.now()
+                deletedAt: null
               },
               actor
             );
             return { ...publishService.response(publishedVersion), recovered: true };
           }
           stage = "CREATE_VERSION";
-          const staleVersion = await service.repository.getVersion(
-            meta.templateId,
-            Number(draft.templateVersion)
-          );
-          if (staleVersion?.status === "FAILED" && staleVersion.deletedAt) {
-            // A failed atomic attempt may have uploaded an immutable package
-            // before its version record was marked failed. Remove only that
-            // orphaned package so the same version can be retried safely.
-            await publishService.storage?.deletePackage?.(
-              meta.templateId,
-              Number(draft.templateVersion)
-            );
-          }
           try {
             await service.createVersion(meta.templateId, draft, actor);
           } catch (error) {
@@ -543,29 +530,21 @@ var handle = async ({
               meta.templateId,
               Number(draft.templateVersion)
             );
-            if (existingVersion?.status === "PUBLISHED") {
-              stage = "ACTIVATE_TEMPLATE";
-              await service.updateTemplate(
-                meta.templateId,
-                {
-                  enabled: body.template?.enabled !== false,
-                  lifecycleStatus: "ACTIVE",
-                  deletedAt: null,
-                  latestVersion: Number(draft.templateVersion),
-                  publishedAt: Number(existingVersion.publishedAt) || Date.now()
-                },
-                actor
-              );
-              return {
-                ...publishService.response(existingVersion),
-                recovered: true
-              };
-            }
-            // A client disconnect can leave the version draft persisted before
-            // package publication finishes. Re-enter the idempotent publisher
-            // for that exact draft instead of making the version permanently
-            // unusable with TEMPLATE_VERSION_CONFLICT.
-            if (existingVersion?.status !== "DRAFT") throw error;
+            if (existingVersion?.status !== "PUBLISHED") throw error;
+            stage = "ACTIVATE_TEMPLATE";
+            await service.updateTemplate(
+              meta.templateId,
+              {
+                enabled: body.template?.enabled !== false,
+                lifecycleStatus: "ACTIVE",
+                deletedAt: null
+              },
+              actor
+            );
+            return {
+              ...publishService.response(existingVersion),
+              recovered: true
+            };
           }
           stage = "BUILD_SIGN_VERIFY_UPLOAD";
           const result = await publishService.publish({ templateId: meta.templateId, templateVersion: Number(draft.templateVersion), actorId: actor, requestId });
@@ -610,9 +589,7 @@ var handle = async ({
         {
           enabled: body.enabled !== false,
           lifecycleStatus: "ACTIVE",
-          deletedAt: null,
-          latestVersion: templateVersion,
-          publishedAt: Number(version.publishedAt) || Date.now()
+          deletedAt: null
         },
         actor
       );
@@ -660,20 +637,6 @@ var handle = async ({
         { ok: true, version: await service.createVersion(m[1], body, actor) },
         201
       );
-    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/prepare-publish$/);
-    if (m && request.method === "POST") {
-      if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-      return json(await publishService.prepare({ templateId: m[1], templateVersion: Number(m[2]), actorId: actor }));
-    }
-    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/prepare-client-publish$/);
-    if (m && request.method === "POST") return json(await publishService.prepareClient({ templateId: m[1], templateVersion: Number(m[2]), client: body, actorId: actor }));
-    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/commit-client-publish$/);
-    if (m && request.method === "POST") return json(await publishService.commitClient({ templateId: m[1], templateVersion: Number(m[2]), ...body, actorId: actor, requestId: request.headers.get("x-request-id") || "" }));
-    m = path.match(/^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/commit-prepared$/);
-    if (m && request.method === "POST") {
-      if (!publishService) throw new EntitlementError("OBJECT_STORAGE_NOT_CONFIGURED", 503);
-      return json(await publishService.commitPrepared({ templateId: m[1], templateVersion: Number(m[2]), prepareId: body.prepareId, chunkIndex: body.chunkIndex, actorId: actor, requestId: request.headers.get("x-request-id") || "" }));
-    }
     m = path.match(
       /^\/admin\/v1\/templates\/([^/]+)\/versions\/(\d+)\/(publish|retire)$/
     );
@@ -793,7 +756,8 @@ var handle = async ({
 var VISIBILITIES = ["PUBLIC", "AUTHENTICATED", "USER_RESTRICTED", "GROUP_RESTRICTED", "INTERNAL", "DISABLED"];
 var UPDATE_POLICIES = ["AUTO", "PROMPT", "FORCED"];
 var VERSION_STATUSES = ["DRAFT", "PUBLISHED", "RETIRED"];
-var CATEGORIES = ["all", "general", "inspection", "operations", "construction", "event"];
+var TEMPLATE_CATEGORIES = ["general", "inspection", "operations", "construction", "event"];
+var CATEGORIES = ["all", ...TEMPLATE_CATEGORIES, "creative", "shared"];
 var active = (x, now) => Boolean(x && x.enabled !== false && !x.revokedAt && (x.expiresAt == null || Number(x.expiresAt) > now));
 var safeId = (value, prefix) => new RegExp(`^${prefix}_[a-z0-9_-]{3,80}$`).test(String(value || ""));
 var clean = (value, max) => String(value || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max);
@@ -844,11 +808,14 @@ var validateTemplate = (input) => {
   if (!safeId(x.templateId, "tpl")) throw new EntitlementError("INVALID_TEMPLATE_ID");
   if (!VISIBILITIES.includes(x.visibility)) throw new EntitlementError("INVALID_VISIBILITY");
   if (!UPDATE_POLICIES.includes(x.updatePolicy)) throw new EntitlementError("INVALID_UPDATE_POLICY");
-  if (!CATEGORIES.includes(x.category)) throw new EntitlementError("INVALID_CATEGORY");
+  if (!TEMPLATE_CATEGORIES.includes(x.category)) throw new EntitlementError("INVALID_CATEGORY");
   if (!Number.isInteger(x.latestVersion) || x.latestVersion < 0 || !Number.isInteger(x.minimumSupportedVersion) || x.minimumSupportedVersion < 1 || x.minimumSupportedVersion > Math.max(1, x.latestVersion)) throw new EntitlementError("INVALID_TEMPLATE_VERSION");
   x.name = clean(x.name, 80);
   x.description = clean(x.description, 500);
   x.tags = [...new Set((x.tags || []).slice(0, 20).map((v) => clean(v, 32)).filter(Boolean))];
+  x.creatorPublicId = clean(x.creatorPublicId, 32) || null;
+  x.contributionType = x.creatorPublicId && x.contributionType === "USER_SUBMISSION" ? "USER_SUBMISSION" : null;
+  x.creatorSharingEnabled = x.contributionType === "USER_SUBMISSION" && x.creatorSharingEnabled !== false;
   x.offlinePolicy = { allowed: Boolean(x.offlinePolicy?.allowed), leaseHours: Math.max(0, Math.min(168, Number(x.offlinePolicy?.leaseHours) || 0)) };
   return x;
 };
@@ -1009,7 +976,7 @@ var MemoryTemplateEntitlementRepository = class {
     }
   }
 };
-var publicTemplate = (x) => ({ templateId: x.templateId, latestVersion: x.latestVersion, minimumSupportedVersion: x.minimumSupportedVersion, updatePolicy: x.updatePolicy, name: x.name, description: x.description, category: x.category, tags: x.tags, badge: "official", updatedAt: x.updatedAt, offlinePolicy: x.offlinePolicy });
+var publicTemplate = (x) => ({ templateId: x.templateId, latestVersion: x.latestVersion, minimumSupportedVersion: x.minimumSupportedVersion, updatePolicy: x.updatePolicy, name: x.name, description: x.description, category: x.category, tags: x.tags, badge: x.contributionType === "USER_SUBMISSION" ? "contribution" : "official", contributionType: x.contributionType || null, creatorPublicId: x.creatorPublicId || null, creatorSharingEnabled: Boolean(x.creatorSharingEnabled), updatedAt: x.updatedAt, offlinePolicy: x.offlinePolicy });
 var TemplateEntitlementService = class {
   constructor({ repository, now = () => Date.now() }) {
     this.repository = repository;
@@ -1037,8 +1004,8 @@ var TemplateEntitlementService = class {
     }
     const items = (await Promise.all(page.ids.map(async (id) => {
       try {
-        const item = await this.detail(subject, id), raw = await this.repository.getTemplate(id);
-        return scope === "exclusive" && !["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(raw.visibility) || category !== "all" && item.category !== category ? null : item;
+        const item = await this.detail(subject, id), raw = await this.repository.getTemplate(id), direct = await this.repository.getDirectGrant(subject.subjectId, id), categoryMatch = category === "creative" ? raw.creatorPublicId === subject.publicId : category === "shared" ? raw.contributionType === "USER_SUBMISSION" && raw.creatorPublicId !== subject.publicId && active(direct, this.now()) : category === "all" || item.category === category;
+        return scope === "exclusive" && !["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(raw.visibility) || !categoryMatch ? null : item;
       } catch {
         return null;
       }
