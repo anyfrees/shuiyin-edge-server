@@ -505,7 +505,9 @@ var handle = async ({
               {
                 enabled: body.template?.enabled !== false,
                 lifecycleStatus: "ACTIVE",
-                deletedAt: null
+                deletedAt: null,
+                latestVersion: Number(draft.templateVersion),
+                publishedAt: Number(publishedVersion.publishedAt) || Date.now()
               },
               actor
             );
@@ -526,7 +528,9 @@ var handle = async ({
               {
                 enabled: body.template?.enabled !== false,
                 lifecycleStatus: "ACTIVE",
-                deletedAt: null
+                deletedAt: null,
+                latestVersion: Number(draft.templateVersion),
+                publishedAt: Number(existingVersion.publishedAt) || Date.now()
               },
               actor
             );
@@ -578,7 +582,9 @@ var handle = async ({
         {
           enabled: body.enabled !== false,
           lifecycleStatus: "ACTIVE",
-          deletedAt: null
+          deletedAt: null,
+          latestVersion: templateVersion,
+          publishedAt: Number(version.publishedAt) || Date.now()
         },
         actor
       );
