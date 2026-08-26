@@ -124,4 +124,3 @@ CREATE TABLE IF NOT EXISTS work_log_tags (
   FOREIGN KEY(subject_id, log_id) REFERENCES work_logs(subject_id, log_id),
   FOREIGN KEY(subject_id, tag_id) REFERENCES tags(subject_id, tag_id)
 );
-
