@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { unstable_dev } from "wrangler";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   generateJiluCode,
   normalizeJiluCode,
@@ -471,8 +472,12 @@ test("HTTP provider parity: D1 and EdgeOne batch/query/error vectors", async (t)
           ? { subjectId: "sub_http_blob", authType: "MINI" }
           : Promise.reject(Error()),
     }),
-    s = snapshot(Date.now()),
-    item = {
+    s = snapshot(Date.now());
+  s.capture.clientCaptureId = `cap_${randomBytes(16).toString("base64url")}`;
+  s.capture.jiluCode = generateJiluCode("2026-08-26", (length) =>
+    randomBytes(length),
+  );
+  const item = {
       clientCaptureId: s.capture.clientCaptureId,
       payloadDigest: await payloadDigest(s),
       snapshot: s,
