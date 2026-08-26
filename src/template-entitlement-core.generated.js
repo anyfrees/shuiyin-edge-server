@@ -495,8 +495,14 @@ var handle = async ({
       const requestId = String(body.clientRequestId || request.headers.get("x-request-id") || "").slice(0, 128);
       if (!requestId) throw new EntitlementError("INVALID_REQUEST_ID");
       publishService.atomicRequests || (publishService.atomicRequests = /* @__PURE__ */ new Map());
-      if (publishService.atomicRequests.has(requestId))
-        return json(await publishService.atomicRequests.get(requestId));
+      if (publishService.atomicRequests.has(requestId)) {
+        const cached = await publishService.atomicRequests.get(requestId);
+        const cachedTemplate = cached?.templateId ? await service.repository.getTemplate(cached.templateId) : null;
+        const cachedVersion = cachedTemplate && !cachedTemplate.deletedAt && Number(cachedTemplate.latestVersion) > 0 ? await service.repository.getVersion(cachedTemplate.templateId, Number(cachedTemplate.latestVersion)) : null;
+        if (cachedTemplate && !cachedTemplate.deletedAt && cachedVersion?.status === "PUBLISHED")
+          return json(cached);
+        publishService.atomicRequests.delete(requestId);
+      }
       const operation = (async () => {
         const meta = { ...body.template || {}, enabled: false, latestVersion: 0 };
         if (["USER_RESTRICTED", "GROUP_RESTRICTED"].includes(meta.visibility) && (!meta.offlinePolicy?.allowed || Number(meta.offlinePolicy?.leaseHours) <= 0))
