@@ -13,6 +13,7 @@ import {
   workLogEnabled,
 } from "../src/work-log/core.js";
 import { EdgeOneBlobWorkLogRepository } from "../src/work-log/repositories.js";
+import { WorkLogHttpService } from "../src/work-log/http-service.generated.js";
 class CasBlob {
   constructor() {
     this.data = new Map();
@@ -252,7 +253,13 @@ test("EdgeOne capture association, project and tag ownership", async () => {
     );
   assert.equal(linked.captureAssociations.length, 1);
   await assert.rejects(
-    repo.attachCapture(subjectB, log.logId, withItem.items[0].itemId, capture.capture.captureId, 3),
+    repo.attachCapture(
+      subjectB,
+      log.logId,
+      withItem.items[0].itemId,
+      capture.capture.captureId,
+      3,
+    ),
     (e) => e.code === "ASSOCIATION_NOT_FOUND",
   );
   const project = await repo.createProject(subject, { name: "工地 A" });
@@ -367,11 +374,13 @@ test("D1 repository executes ownership, idempotency, association and concurrency
     });
   const tag = await call("createTag", runSubject, { name: "安全" });
   assert.equal(
-    (await call("attachTag", runSubject, log.result.log_id, tag.result.tag_id)).ok,
+    (await call("attachTag", runSubject, log.result.log_id, tag.result.tag_id))
+      .ok,
     true,
   );
   assert.equal(
-    (await call("attachTag", subjectB, log.result.log_id, tag.result.tag_id)).code,
+    (await call("attachTag", subjectB, log.result.log_id, tag.result.tag_id))
+      .code,
     "ASSOCIATION_NOT_FOUND",
   );
   assert.equal(
@@ -379,8 +388,10 @@ test("D1 repository executes ownership, idempotency, association and concurrency
       await call(
         "attachCapture",
         runSubject,
+        log.result.log_id,
         item.result.item_id,
         created.result.capture.capture_id,
+        1,
       )
     ).ok,
     true,
@@ -390,8 +401,10 @@ test("D1 repository executes ownership, idempotency, association and concurrency
       await call(
         "attachCapture",
         subjectB,
+        log.result.log_id,
         item.result.item_id,
         created.result.capture.capture_id,
+        1,
       )
     ).code,
     "ASSOCIATION_NOT_FOUND",
@@ -429,4 +442,76 @@ test("shared Work Log core artifact remains byte-identical to Docker", () => {
       path.resolve(root, "../shuiyin-server/src/work-log/core.js"),
     );
   assert.deepEqual(edge, docker);
+});
+test("generated Work Log HTTP service remains byte-identical to Docker source",()=>{const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");assert.deepEqual(fs.readFileSync(path.join(root,"src/work-log/http-service.generated.js")),fs.readFileSync(path.resolve(root,"../shuiyin-server/src/work-log/http-service.js")))});
+test("HTTP provider parity: D1 and EdgeOne batch/query/error vectors", async (t) => {
+  execFileSync(
+    process.execPath,
+    [
+      "node_modules/wrangler/bin/wrangler.js",
+      "d1",
+      "migrations",
+      "apply",
+      "PROVENANCE_D1",
+      "--local",
+    ],
+    { stdio: "ignore" },
+  );
+  const worker = await unstable_dev(
+    "tests/fixtures/d1-work-log-http-worker.js",
+    { config: "wrangler.jsonc", local: true, persist: true, logLevel: "none" },
+  );
+  t.after(() => worker.stop());
+  const blobService = new WorkLogHttpService({
+      repository: new EdgeOneBlobWorkLogRepository(new CasBlob()),
+      enabled: true,
+      cursorSecret: "http-parity-test",
+      authenticate: async (req) =>
+        req.headers.get("authorization") === "Bearer mini"
+          ? { subjectId: "sub_http_blob", authType: "MINI" }
+          : Promise.reject(Error()),
+    }),
+    s = snapshot(Date.now()),
+    item = {
+      clientCaptureId: s.capture.clientCaptureId,
+      payloadDigest: await payloadDigest(s),
+      snapshot: s,
+    },
+    invoke = async (target, path, init = {}) => {
+      const request = new Request(`http://local${path}`, {
+          ...init,
+          headers: {
+            authorization: "Bearer mini",
+            ...(init.body ? { "content-type": "application/json" } : {}),
+          },
+        }),
+        response =
+          target === "d1"
+            ? await worker.fetch(`http://local${path}`, {
+                ...init,
+                headers: Object.fromEntries(request.headers),
+              })
+            : await blobService.handle(request);
+      return { status: response.status, body: await response.json() };
+    };
+  for (const target of ["d1", "blob"]) {
+    const created = await invoke(target, "/v1/captures/batch", {
+      method: "POST",
+      body: JSON.stringify({ schemaVersion: 1, items: [item] }),
+    });
+    assert.equal(created.status, 201, JSON.stringify(created));
+    assert.equal(created.body.results[0].status, "CREATED");
+    const replay = await invoke(target, "/v1/captures/batch", {
+      method: "POST",
+      body: JSON.stringify({ schemaVersion: 1, items: [item] }),
+    });
+    assert.equal(replay.body.results[0].status, "ALREADY_EXISTS");
+    const list = await invoke(target, "/v1/captures?limit=1");
+    assert.equal(list.body.items.length, 1);
+    const invalid = await invoke(target, "/v1/captures?cursor=tampered");
+    assert.deepEqual(
+      { status: invalid.status, code: invalid.body.code },
+      { status: 400, code: "CURSOR_INVALID" },
+    );
+  }
 });
