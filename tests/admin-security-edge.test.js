@@ -5,9 +5,9 @@ import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { createEdgeAdminHandler } from '../src/admin-security-edge.js'
 
 class Kv {
-  constructor() { this.data = new Map() }
+  constructor() { this.data = new Map(); this.failNextAudit = false }
   async get(key) { return this.data.get(key) ?? null }
-  async put(key, value) { this.data.set(key, value) }
+  async put(key, value) { if(this.failNextAudit&&key.startsWith('admin:audit:')){this.failNextAudit=false;throw new Error('AUDIT_WRITE_FAILED')}this.data.set(key, value) }
   async delete(key) { this.data.delete(key) }
   async list({ prefix = '', limit = 100 }) { if(limit>256)throw new Error('KV_LIMIT_EXCEEDED');return { keys: [...this.data.keys()].filter(key => key.startsWith(prefix)).slice(0,limit).map(name => ({ name })), list_complete: true } }
 }
@@ -43,6 +43,8 @@ test('signed migration preserves an Argon2 password and issues a CSRF-bound admi
   await kv.put('submission:record:sub_missing_publish',JSON.stringify({submissionId:'sub_missing_publish',subjectId:'sub_test',status:'PENDING',packageChunks:1,packageSize:2}))
   await kv.put('submission:package:sub_missing_publish:0','{}')
   response=await invoke(handler,'/admin/v1/console/submissions/sub_missing_publish/approve',{method:'POST',body:{templateId:'tpl_missing_publish'},headers:mutationHeaders});assert.equal(response.status,409);assert.equal((await response.json()).code,'SUBMISSION_TEMPLATE_NOT_PUBLISHED');assert.equal(JSON.parse(await kv.get('submission:record:sub_missing_publish')).status,'PENDING');assert.equal(await kv.get('submission:package:sub_missing_publish:0'),'{}')
+  await kv.put('te_tpl_tpl_publish_ok',JSON.stringify({templateId:'tpl_publish_ok',latestVersion:1,contributionType:'USER_SUBMISSION',creatorPublicId:'JL-TEST01'}));await kv.put('te_ver_tpl_publish_ok_1',JSON.stringify({templateId:'tpl_publish_ok',templateVersion:1,status:'PUBLISHED'}));await kv.put('submission:record:sub_publish_ok',JSON.stringify({submissionId:'sub_publish_ok',subjectId:'sub_test',status:'PENDING',packageChunks:1,packageSize:2}));await kv.put('submission:package:sub_publish_ok:0','{}');kv.failNextAudit=true
+  response=await invoke(handler,'/admin/v1/console/submissions/sub_publish_ok/approve',{method:'POST',body:{templateId:'tpl_publish_ok'},headers:mutationHeaders});assert.equal(response.status,200);assert.equal((await response.json()).status,'APPROVED');assert.equal(JSON.parse(await kv.get('submission:record:sub_publish_ok')).status,'APPROVED')
   response=await invoke(handler,'/admin/v1/console/backup/status',{headers:{cookie:sessionCookie}});const backupStatus=await response.json();assert.equal(backupStatus.available,true);assert.equal(backupStatus.canExport,true);assert.equal(backupStatus.sections.includes('packages'),false)
   response=await invoke(handler,'/admin/v1/console/administrators',{method:'POST',body:{username:'delete.me',password:'temporary password 123',displayName:'待删除',roles:['AUDITOR'],templateScopes:[],groupScopes:[]},headers:mutationHeaders});const disposable=(await response.json()).admin;assert.equal(response.status,201)
   response=await invoke(handler,`/admin/v1/console/administrators/${disposable.admin_id}`,{method:'DELETE',body:{},headers:mutationHeaders});assert.equal(response.status,204);assert.equal(await kv.get(`admin:principal:${disposable.admin_id}`),null);assert.equal(await kv.get('admin:username:delete.me'),null)
