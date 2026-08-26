@@ -52,18 +52,23 @@ const cursorSig = async (secret, payload) =>
   (await payloadDigest({ secret, payload })).slice(0, 32);
 
 export class WorkLogHttpService {
+  /** @param {any} options */
   constructor({
     repository,
     authenticate,
     enabled = false,
     cursorSecret = "work-log-v1-local",
     verifyProvenanceOwnership = null,
+    exportService = null,
+    exportEnabled = false,
   }) {
     this.repository = repository;
     this.authenticate = authenticate;
     this.enabled = enabled;
     this.cursorSecret = cursorSecret;
     this.verifyProvenanceOwnership = verifyProvenanceOwnership;
+    this.exportService = exportService;
+    this.exportEnabled = exportEnabled;
   }
   async body(request) {
     const size = Number(request.headers.get("content-length") || 0);
@@ -126,6 +131,30 @@ export class WorkLogHttpService {
       const url = new URL(request.url),
         path = url.pathname,
         method = request.method;
+      if (path === "/v1/exports" && method === "POST") {
+        if (!this.exportEnabled || !this.exportService)
+          throw new WorkLogError("EXPORT_DISABLED", 503);
+        const { subjectId } = await this.auth(request), body = await this.body(request);
+        return json({ ok: true, export: await this.exportService.create(subjectId, body) }, 202);
+      }
+      if (path === "/v1/exports" && method === "GET") {
+        if (!this.exportEnabled || !this.exportService)
+          throw new WorkLogError("EXPORT_DISABLED", 503);
+        const { subjectId } = await this.auth(request);
+        return json({ ok: true, items: await this.exportService.list(subjectId) });
+      }
+      let exportMatch = path.match(/^\/v1\/exports\/([^/]+)(\/download)?$/);
+      if (exportMatch && method === "GET") {
+        if (!this.exportEnabled || !this.exportService)
+          throw new WorkLogError("EXPORT_DISABLED", 503);
+        const { subjectId } = await this.auth(request), exportId = decodeURIComponent(exportMatch[1]);
+        if (!exportMatch[2]) return json({ ok: true, export: await this.exportService.get(subjectId, exportId) });
+        const artifact = await this.exportService.download(subjectId, exportId);
+        return new Response(artifact.bytes, { status: 200, headers: {
+          "content-type": artifact.contentType, "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`,
+          "cache-control": "private, no-store", "x-content-type-options": "nosniff",
+        }});
+      }
       if (path === "/v1/captures/batch" && method === "POST") {
         const { subjectId } = await this.auth(request, true),
           body = await this.body(request);
