@@ -608,6 +608,22 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       for (const principal of await list(kv, 'principal')) if ((principal.groupScopes || []).includes(groupDelete[1])) { principal.groupScopes = principal.groupScopes.filter(x => x !== groupDelete[1]); principal.authzEpoch++; await put(kv, 'principal', principal.adminId, principal) }
       await service.audit(access.principal.adminId, 'GROUP_DELETE', 'group', groupDelete[1]); return new Response(null, { status: 204 })
     }
+    const creatorTemplateDelete = path.match(/^\/templates\/([^/]+)$/)
+    if (creatorTemplateDelete && method === 'DELETE' && forward) {
+      const templateId = decodeURIComponent(creatorTemplateDelete[1])
+      await service.require(access, { permission: 'template.disable', templateId })
+      const template = parse(await kv.get(`te_tpl_${templateId}`)), response = await forwardAdmin(path, method)
+      if (response.ok && template?.contributionType === 'USER_SUBMISSION' && template.creatorPublicId) {
+        const records = await listValues(kv, 'submission:record:'), recipients = new Map()
+        for (const record of records) if (record?.status === 'APPROVED' && record.publishedTemplateId === templateId && record.subjectId) recipients.set(record.subjectId, record)
+        const createdAt = Date.now()
+        for (const [subjectId, record] of recipients) {
+          const noticeId = `template-removed:${templateId}:${subjectId}`
+          await kv.put(`creator:notice:${noticeId}`, JSON.stringify({ noticeId, subjectId, type: 'TEMPLATE_REMOVED', templateId, title: template.name || record.title || '已发布模板', content: '该模板已由管理员下架，不再显示在作品列表和模板库中。', createdAt }))
+        }
+      }
+      return response
+    }
     const requirement = routePermission(path, method)
     if (requirement && forward) {
       await service.require(access, requirement)
