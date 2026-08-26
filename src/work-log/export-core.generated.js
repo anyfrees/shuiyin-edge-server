@@ -37,27 +37,44 @@ const normalizeItem = (item, logId) => publicValue({
   endAt: item.endAt ?? item.end_at ?? null, sortOrder: item.sortOrder ?? item.sort_order ?? 0,
   createdAt: item.createdAt ?? item.created_at ?? null, updatedAt: item.updatedAt ?? item.updated_at ?? null,
 });
+const normalizeLog = (log) => publicValue({
+  logId: log.logId || log.log_id, localDate: log.localDate || log.local_date, timezone: log.timezone || null,
+  title: log.title || "", summary: log.summary || "", projectId: log.projectId ?? log.project_id ?? null,
+  projectNameSnapshot: log.projectNameSnapshot ?? log.project_name_snapshot ?? null, status: log.status,
+  version: log.version, createdAt: log.createdAt ?? log.created_at, updatedAt: log.updatedAt ?? log.updated_at,
+  finalizedAt: log.finalizedAt ?? log.finalized_at ?? null, deletedAt: log.deletedAt ?? log.deleted_at ?? null,
+});
+const parsed = (value) => { if (typeof value !== "string") return value; try { return JSON.parse(value); } catch { return null; } };
+const normalizeCapture = (capture) => publicValue(capture.captureId ? capture : {
+  captureId:capture.capture_id,clientCaptureId:capture.client_capture_id,jiluCode:capture.jilu_code,capturedAt:capture.captured_at,
+  localDate:capture.local_date,timezone:capture.timezone,utcOffsetMinutes:capture.utc_offset_minutes,
+  template:{origin:capture.template_source,templateId:capture.template_id,version:capture.template_version,nameSnapshot:capture.template_name_snapshot},
+  project:{projectId:capture.project_id,projectNameSnapshot:capture.project_name_snapshot},location:parsed(capture.location_json),weather:parsed(capture.weather_json),
+  fields:parsed(capture.fields_json)||[],rendered:parsed(capture.rendered_json),photoSha256:capture.photo_sha256,photoStorageState:capture.photo_storage_state,
+  provenanceRecordId:capture.provenance_record_id,createdAt:capture.created_at,updatedAt:capture.updated_at,
+});
 const normalizeLink = (link, logId) => ({ logId, itemId: link.itemId || link.item_id, captureId: link.captureId || link.capture_id, sortOrder: link.sortOrder ?? link.sort_order ?? 0 });
 
 export const buildExportModel = async ({ repository, subjectId, query: rawQuery, now = () => Date.now() }) => {
   const query = validateExportQuery(rawQuery), startedAt = now(), selected = [], wanted = new Set(query.logIds);
   for (let offset = 0; ; offset += 100) {
     const page = await repository.listWorkLogs(subjectId, { status: query.status, limit: 100, offset });
-    for (const log of page) if (log.localDate >= query.dateFrom && log.localDate <= query.dateTo && (!query.projectId || log.projectId === query.projectId) && (!wanted.size || wanted.has(log.logId)) && Number(log.createdAt || 0) <= startedAt) selected.push(publicValue(log));
+    for (const sourceLog of page) { const log = normalizeLog(sourceLog); if (log.localDate >= query.dateFrom && log.localDate <= query.dateTo && (!query.projectId || log.projectId === query.projectId) && (!wanted.size || wanted.has(log.logId)) && Number(log.createdAt || 0) <= startedAt) selected.push(log); }
     if (page.length < 100) break;
     if (offset + 100 > EXPORT_MAX_ROWS) throw new WorkLogError("EXPORT_TOO_LARGE", 413);
   }
   selected.sort((a, b) => String(a.localDate).localeCompare(String(b.localDate)) || String(a.logId).localeCompare(String(b.logId)));
   const logs = [], items = [], itemCaptures = [], captureIds = new Set();
   for (const chosen of selected) {
-    const aggregate = await repository.getWorkLog(subjectId, chosen.logId);
-    if (!aggregate || aggregate.version !== chosen.version) throw new WorkLogError("EXPORT_SNAPSHOT_CONFLICT", 409);
-    logs.push(publicValue(Object.fromEntries(Object.entries(aggregate).filter(([key]) => !["items", "captureAssociations", "subjectId", "subject_id"].includes(key)))));
+    const aggregate = repository.getWorkLogExportAggregate ? await repository.getWorkLogExportAggregate(subjectId, chosen.logId) : await repository.getWorkLog(subjectId, chosen.logId);
+    const aggregateLog = aggregate && normalizeLog(aggregate);
+    if (!aggregateLog || aggregateLog.version !== chosen.version) throw new WorkLogError("EXPORT_SNAPSHOT_CONFLICT", 409);
+    logs.push(aggregateLog);
     for (const item of aggregate.items || []) items.push(normalizeItem(item, chosen.logId));
     for (const link of aggregate.captureAssociations || []) { const value = normalizeLink(link, chosen.logId); itemCaptures.push(value); if (query.includeCaptures) captureIds.add(value.captureId); }
   }
   const captures = [];
-  if (query.includeCaptures) for (const captureId of [...captureIds].sort()) { const capture = await repository.getCaptureById(subjectId, captureId); if (capture) captures.push(publicValue(capture)); }
+  if (query.includeCaptures) for (const captureId of [...captureIds].sort()) { const capture = await repository.getCaptureById(subjectId, captureId); if (capture) captures.push(normalizeCapture(capture)); }
   captures.sort((a, b) => String(a.capturedAt).localeCompare(String(b.capturedAt)) || String(a.captureId).localeCompare(String(b.captureId)));
   const fields = captures.flatMap((capture) => (capture.fields || []).map((field) => publicValue({ captureId: capture.captureId, jiluCode: capture.jiluCode, ...field })));
   const count = logs.length + items.length + itemCaptures.length + captures.length + fields.length;

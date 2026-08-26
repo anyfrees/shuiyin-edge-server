@@ -291,6 +291,13 @@ export class D1WorkLogRepository {
     );
     return x && x.status !== "DELETED" ? x : null;
   }
+  async getWorkLogExportAggregate(subjectId, logId) {
+    const log = await this.getWorkLog(subjectId, logId);
+    if (!log) return null;
+    const items = await this.db.prepare("SELECT * FROM work_log_items WHERE subject_id=? AND log_id=? AND deleted_at IS NULL ORDER BY sort_order,item_id").bind(subjectId, logId).all();
+    const links = await this.db.prepare("SELECT c.* FROM work_log_item_captures c JOIN work_log_items i ON i.subject_id=c.subject_id AND i.item_id=c.item_id WHERE c.subject_id=? AND i.log_id=? ORDER BY c.sort_order,c.capture_id").bind(subjectId, logId).all();
+    return { ...log, items: items.results || [], captureAssociations: links.results || [] };
+  }
   async listWorkLogs(
     subjectId,
     { status = null, limit = 50, offset = 0 } = {},
