@@ -64,6 +64,7 @@ const rejectForbidden = (value, path = "") => {
   }
 };
 const bounded = (value,max,code) => { if (String(value ?? "").length > max) throw new WorkLogError(code); };
+const strictKeys=(value,allowed)=>{if(!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))throw new WorkLogError("CAPTURE_SCHEMA_INVALID")};
 export const deriveLocalDate = ({capturedAt,timezone,utcOffsetMinutes}) => {
   const instant = new Date(capturedAt);
   if (!Number.isFinite(instant.getTime())) throw new WorkLogError("CAPTURE_TIME_INVALID");
@@ -79,12 +80,14 @@ export const validateCaptureSnapshot = snapshot => {
   rejectForbidden(snapshot);
   if (!snapshot || snapshot.schemaVersion !== 1 || snapshot.state !== "COMMITTED") throw new WorkLogError("CAPTURE_SCHEMA_INVALID");
   const c = snapshot.capture || {}, p = snapshot.photo || {};
+  strictKeys(snapshot,["schemaVersion","state","capture","template","project","location","weather","fields","rendered","photo","provenance"]);strictKeys(c,["clientCaptureId","jiluCode","sourceType","capturedAt","captureRequestedAt","captureCompletedAt","timezone","utcOffsetMinutes"]);strictKeys(snapshot.template,["origin","templateId","customTemplateId","builtinId","version","nameSnapshot"]);strictKeys(snapshot.project,["projectId","projectNameSnapshot"]);strictKeys(snapshot.location,["source","name","address","latitude","longitude","accuracyMeters","altitudeMeters"]);if(snapshot.weather)strictKeys(snapshot.weather,["textSnapshot"]);strictKeys(snapshot.rendered,["textSnapshot","lines"]);strictKeys(p,["sha256","storageState"]);strictKeys(snapshot.provenance,["clientTaskId","recordId"]);
   if (!/^cap_[A-Za-z0-9_-]{22}$/.test(c.clientCaptureId || "")) throw new WorkLogError("CLIENT_CAPTURE_ID_INVALID");
   const jiluCode = normalizeJiluCode(c.jiluCode);
   if (!/^[a-f0-9]{64}$/.test(p.sha256 || "") || p.storageState !== "LOCAL_ONLY") throw new WorkLogError("PHOTO_CONTRACT_INVALID");
   if (!["LIVE_CAMERA","ALBUM_WATERMARKED"].includes(c.sourceType)) throw new WorkLogError("CAPTURE_SOURCE_INVALID");
   if (!Array.isArray(snapshot.fields) || snapshot.fields.length > 100) throw new WorkLogError("CAPTURE_FIELDS_INVALID");
   for (const field of snapshot.fields) {
+    strictKeys(field,["fieldId","labelSnapshot","type","value","visibleInPhoto","source"]);
     bounded(field.fieldId,160,"FIELD_TOO_LARGE"); bounded(field.labelSnapshot,120,"FIELD_TOO_LARGE");
     if (!["text","number","date","time","datetime","person","people","select","multi_select","boolean","location","note"].includes(field.type)) throw new WorkLogError("FIELD_TYPE_INVALID");
     if (typeof field.value === "string") bounded(field.value, field.type === "note" ? 8000 : 2000, "FIELD_TOO_LARGE");

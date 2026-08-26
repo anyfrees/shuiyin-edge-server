@@ -390,20 +390,126 @@ export class D1WorkLogRepository {
       itemId,
     );
   }
-  async attachCapture(subjectId, itemId, captureId, sortOrder = 0) {
+  async updateItem(subjectId, logId, itemId, input, expectedVersion) {
     const item = await this.first(
-        "SELECT i.*,l.status FROM work_log_items i JOIN work_logs l ON l.subject_id=i.subject_id AND l.log_id=i.log_id WHERE i.subject_id=? AND i.item_id=?",
+        "SELECT * FROM work_log_items WHERE subject_id=? AND log_id=? AND item_id=? AND deleted_at IS NULL",
+        subjectId,
+        logId,
+        itemId,
+      ),
+      log = await this.first(
+        "SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",
+        subjectId,
+        logId,
+      );
+    if (!item || !log) throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
+    if (log.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
+    if (Number.isInteger(expectedVersion) && log.version !== expectedVersion)
+      throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+    await this.db
+      .prepare(
+        "UPDATE work_log_items SET category=?,title=?,content=?,result=?,note=?,start_at=?,end_at=?,sort_order=?,version=version+1,updated_at=? WHERE subject_id=? AND log_id=? AND item_id=?",
+      )
+      .bind(
+        input.category ?? item.category,
+        input.title ?? item.title,
+        input.content ?? item.content,
+        input.result ?? item.result,
+        input.note ?? item.note,
+        input.startAt ?? item.start_at,
+        input.endAt ?? item.end_at,
+        input.sortOrder ?? item.sort_order,
+        this.now(),
+        subjectId,
+        logId,
+        itemId,
+      )
+      .run();
+    return this.first(
+      "SELECT * FROM work_log_items WHERE subject_id=? AND item_id=?",
+      subjectId,
+      itemId,
+    );
+  }
+  async deleteItem(subjectId, logId, itemId, expectedVersion) {
+    const item = await this.first(
+        "SELECT * FROM work_log_items WHERE subject_id=? AND log_id=? AND item_id=?",
+        subjectId,
+        logId,
+        itemId,
+      ),
+      log = await this.first(
+        "SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",
+        subjectId,
+        logId,
+      );
+    if (!item || !log) throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
+    if (log.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
+    if (Number.isInteger(expectedVersion) && log.version !== expectedVersion)
+      throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+    await this.db.batch([
+      this.db
+        .prepare(
+          "DELETE FROM work_log_item_captures WHERE subject_id=? AND item_id=?",
+        )
+        .bind(subjectId, itemId),
+      this.db
+        .prepare(
+          "UPDATE work_log_items SET deleted_at=?,updated_at=? WHERE subject_id=? AND item_id=?",
+        )
+        .bind(this.now(), this.now(), subjectId, itemId),
+    ]);
+    return true;
+  }
+  async attachCapture(
+    subjectId,
+    logId,
+    itemId,
+    captureId,
+    expectedVersion,
+    sortOrder = 0,
+  ) {
+    const item = await this.first(
+        "SELECT i.*,l.status,l.version AS log_version FROM work_log_items i JOIN work_logs l ON l.subject_id=i.subject_id AND l.log_id=i.log_id WHERE i.subject_id=? AND i.item_id=?",
         subjectId,
         itemId,
       ),
       capture = await this.getCaptureById(subjectId, captureId);
-    if (!item || !capture) throw new WorkLogError("ASSOCIATION_NOT_FOUND", 404);
+    if (!item || !capture || item.log_id !== logId)
+      throw new WorkLogError("ASSOCIATION_NOT_FOUND", 404);
     if (item.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
+    if (
+      Number.isInteger(expectedVersion) &&
+      item.log_version !== expectedVersion
+    )
+      throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
     await this.db
       .prepare(
         "INSERT OR IGNORE INTO work_log_item_captures(subject_id,item_id,capture_id,sort_order,created_at) VALUES(?,?,?,?,?)",
       )
       .bind(subjectId, itemId, captureId, sortOrder, this.now())
+      .run();
+    return true;
+  }
+  async detachCapture(subjectId, logId, itemId, captureId, expectedVersion) {
+    const item = await this.first(
+      "SELECT i.*,l.status,l.version AS log_version FROM work_log_items i JOIN work_logs l ON l.subject_id=i.subject_id AND l.log_id=i.log_id WHERE i.subject_id=? AND i.log_id=? AND i.item_id=?",
+      subjectId,
+      logId,
+      itemId,
+    );
+    if (!item) throw new WorkLogError("ASSOCIATION_NOT_FOUND", 404);
+    if (item.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
+    if (
+      Number.isInteger(expectedVersion) &&
+      item.log_version !== expectedVersion
+    )
+      throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+    await this.db
+      .prepare(
+        "DELETE FROM work_log_item_captures WHERE subject_id=? AND item_id=? AND capture_id=?",
+      )
+      .bind(subjectId, itemId, captureId)
       .run();
     return true;
   }
@@ -443,6 +549,46 @@ export class D1WorkLogRepository {
       projectId,
     );
   }
+  async listProjects(subjectId, { status = null } = {}) {
+    const q = status
+      ? this.db
+          .prepare(
+            "SELECT * FROM projects WHERE subject_id=? AND status=? ORDER BY updated_at DESC,project_id",
+          )
+          .bind(subjectId, status)
+      : this.db
+          .prepare(
+            "SELECT * FROM projects WHERE subject_id=? ORDER BY updated_at DESC,project_id",
+          )
+          .bind(subjectId);
+    return (await q.all()).results || [];
+  }
+  async updateProject(subjectId, projectId, input) {
+    const old = await this.getProject(subjectId, projectId);
+    if (!old) throw new WorkLogError("PROJECT_NOT_FOUND", 404);
+    const name = String(input.name ?? old.name).trim(),
+      normalized = normalizeProjectName(name);
+    try {
+      await this.db
+        .prepare(
+          "UPDATE projects SET name=?,normalized_name=?,description=?,updated_at=? WHERE subject_id=? AND project_id=?",
+        )
+        .bind(
+          name,
+          normalized,
+          String(input.description ?? old.description),
+          this.now(),
+          subjectId,
+          projectId,
+        )
+        .run();
+    } catch (e) {
+      if (/constraint|unique/i.test(String(e?.message || e)))
+        throw new WorkLogError("PROJECT_NAME_CONFLICT", 409);
+      throw e;
+    }
+    return this.getProject(subjectId, projectId);
+  }
   async archiveProject(subjectId, projectId) {
     const now = this.now(),
       r = await this.db
@@ -477,6 +623,62 @@ export class D1WorkLogRepository {
       subjectId,
       tagId,
     );
+  }
+  async listTags(subjectId) {
+    return (
+      (
+        await this.db
+          .prepare(
+            "SELECT * FROM tags WHERE subject_id=? ORDER BY normalized_name,tag_id",
+          )
+          .bind(subjectId)
+          .all()
+      ).results || []
+    );
+  }
+  async updateTag(subjectId, tagId, input) {
+    const old = await this.first(
+      "SELECT * FROM tags WHERE subject_id=? AND tag_id=?",
+      subjectId,
+      tagId,
+    );
+    if (!old) throw new WorkLogError("TAG_NOT_FOUND", 404);
+    const name = String(input.name ?? old.name).trim(),
+      normalized = normalizeProjectName(name);
+    try {
+      await this.db
+        .prepare(
+          "UPDATE tags SET name=?,normalized_name=? WHERE subject_id=? AND tag_id=?",
+        )
+        .bind(name, normalized, subjectId, tagId)
+        .run();
+    } catch (e) {
+      if (/constraint|unique/i.test(String(e?.message || e)))
+        throw new WorkLogError("TAG_NAME_CONFLICT", 409);
+      throw e;
+    }
+    return this.first(
+      "SELECT * FROM tags WHERE subject_id=? AND tag_id=?",
+      subjectId,
+      tagId,
+    );
+  }
+  async deleteTag(subjectId, tagId) {
+    const old = await this.first(
+      "SELECT * FROM tags WHERE subject_id=? AND tag_id=?",
+      subjectId,
+      tagId,
+    );
+    if (!old) throw new WorkLogError("TAG_NOT_FOUND", 404);
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM work_log_tags WHERE subject_id=? AND tag_id=?")
+        .bind(subjectId, tagId),
+      this.db
+        .prepare("DELETE FROM tags WHERE subject_id=? AND tag_id=?")
+        .bind(subjectId, tagId),
+    ]);
+    return true;
   }
   async attachTag(subjectId, logId, tagId) {
     const log = await this.first(
@@ -996,6 +1198,49 @@ export class EdgeOneBlobWorkLogRepository {
       };
     });
   }
+  updateItem(subjectId, logId, itemId, input, expectedVersion) {
+    return this.mutateAggregate(subjectId, logId, (current) => {
+      if (current.version !== expectedVersion)
+        throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+      if (current.status !== "DRAFT")
+        throw new WorkLogError("WORK_LOG_FINAL", 409);
+      const index = current.items.findIndex((x) => x.itemId === itemId);
+      if (index < 0) throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
+      const items = [...current.items],
+        old = items[index];
+      items[index] = {
+        ...old,
+        category: input.category ?? old.category,
+        title: input.title ?? old.title,
+        content: input.content ?? old.content,
+        result: input.result ?? old.result,
+        note: input.note ?? old.note,
+        startAt: input.startAt ?? old.startAt,
+        endAt: input.endAt ?? old.endAt,
+        sortOrder: input.sortOrder ?? old.sortOrder,
+        updatedAt: this.now(),
+      };
+      return { ...current, items, updatedAt: this.now() };
+    });
+  }
+  deleteItem(subjectId, logId, itemId, expectedVersion) {
+    return this.mutateAggregate(subjectId, logId, (current) => {
+      if (current.version !== expectedVersion)
+        throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+      if (current.status !== "DRAFT")
+        throw new WorkLogError("WORK_LOG_FINAL", 409);
+      if (!current.items.some((x) => x.itemId === itemId))
+        throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
+      return {
+        ...current,
+        items: current.items.filter((x) => x.itemId !== itemId),
+        captureAssociations: current.captureAssociations.filter(
+          (x) => x.itemId !== itemId,
+        ),
+        updatedAt: this.now(),
+      };
+    });
+  }
   async attachCapture(
     subjectId,
     logId,
@@ -1021,6 +1266,23 @@ export class EdgeOneBlobWorkLogRepository {
           ),
           { itemId, captureId, sortOrder, createdAt: this.now() },
         ],
+        updatedAt: this.now(),
+      };
+    });
+  }
+  detachCapture(subjectId, logId, itemId, captureId, expectedVersion) {
+    return this.mutateAggregate(subjectId, logId, (current) => {
+      if (current.version !== expectedVersion)
+        throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+      if (current.status !== "DRAFT")
+        throw new WorkLogError("WORK_LOG_FINAL", 409);
+      if (!current.items.some((x) => x.itemId === itemId))
+        throw new WorkLogError("ASSOCIATION_NOT_FOUND", 404);
+      return {
+        ...current,
+        captureAssociations: current.captureAssociations.filter(
+          (x) => !(x.itemId === itemId && x.captureId === captureId),
+        ),
         updatedAt: this.now(),
       };
     });
@@ -1053,6 +1315,26 @@ export class EdgeOneBlobWorkLogRepository {
       archivedAt: null,
     };
     await this.createOnly(this.key("project", subjectId, projectId), value);
+    const listKey = this.key("project-list", subjectId);
+    for (let i = 0; i < this.maxRetries; i++) {
+      const h = await this.read(listKey),
+        v = h?.value || { schemaVersion: 1, version: 0, projectIds: [] };
+      if (
+        await this.cas(
+          listKey,
+          {
+            ...v,
+            version: v.version + 1,
+            projectIds: [
+              projectId,
+              ...v.projectIds.filter((x) => x !== projectId),
+            ],
+          },
+          h?.etag || null,
+        )
+      )
+        break;
+    }
     return value;
   }
   async getProject(subjectId, projectId) {
@@ -1060,6 +1342,42 @@ export class EdgeOneBlobWorkLogRepository {
       (await this.read(this.key("project", subjectId, projectId)))?.value ||
       null
     );
+  }
+  async listProjects(subjectId, { status = null } = {}) {
+    const list = await this.read(this.key("project-list", subjectId)),
+      values = (
+        await Promise.all(
+          (list?.value?.projectIds || []).map((id) =>
+            this.getProject(subjectId, id),
+          ),
+        )
+      ).filter(Boolean);
+    return status ? values.filter((x) => x.status === status) : values;
+  }
+  async updateProject(subjectId, projectId, input) {
+    const key = this.key("project", subjectId, projectId),
+      old = await this.read(key);
+    if (!old) throw new WorkLogError("PROJECT_NOT_FOUND", 404);
+    const name = String(input.name ?? old.value.name).trim(),
+      normalizedName = normalizeProjectName(name);
+    if (
+      normalizedName !== old.value.normalizedName &&
+      !(await this.createOnly(
+        this.key("project-name", subjectId, normalizedName),
+        { subjectId, projectId },
+      ))
+    )
+      throw new WorkLogError("PROJECT_NAME_CONFLICT", 409);
+    const next = {
+      ...old.value,
+      name,
+      normalizedName,
+      description: String(input.description ?? old.value.description),
+      updatedAt: this.now(),
+    };
+    if (!(await this.cas(key, next, old.etag)))
+      throw new WorkLogError("PROJECT_VERSION_CONFLICT", 409);
+    return next;
   }
   async archiveProject(subjectId, projectId) {
     const key = this.key("project", subjectId, projectId),
@@ -1096,7 +1414,64 @@ export class EdgeOneBlobWorkLogRepository {
       createdAt: this.now(),
     };
     await this.createOnly(this.key("tag", subjectId, tagId), tag);
+    const listKey = this.key("tag-list", subjectId);
+    for (let i = 0; i < this.maxRetries; i++) {
+      const h = await this.read(listKey),
+        v = h?.value || { schemaVersion: 1, version: 0, tagIds: [] };
+      if (
+        await this.cas(
+          listKey,
+          {
+            ...v,
+            version: v.version + 1,
+            tagIds: [tagId, ...v.tagIds.filter((x) => x !== tagId)],
+          },
+          h?.etag || null,
+        )
+      )
+        break;
+    }
     return tag;
+  }
+  async listTags(subjectId) {
+    const list = await this.read(this.key("tag-list", subjectId));
+    return (
+      await Promise.all(
+        (list?.value?.tagIds || []).map((id) =>
+          this.read(this.key("tag", subjectId, id)),
+        ),
+      )
+    )
+      .map((x) => x?.value)
+      .filter(Boolean);
+  }
+  async updateTag(subjectId, tagId, input) {
+    const key = this.key("tag", subjectId, tagId),
+      old = await this.read(key);
+    if (!old) throw new WorkLogError("TAG_NOT_FOUND", 404);
+    const name = String(input.name ?? old.value.name).trim(),
+      normalizedName = normalizeProjectName(name);
+    if (
+      normalizedName !== old.value.normalizedName &&
+      !(await this.createOnly(this.key("tag-name", subjectId, normalizedName), {
+        subjectId,
+        tagId,
+      }))
+    )
+      throw new WorkLogError("TAG_NAME_CONFLICT", 409);
+    const next = { ...old.value, name, normalizedName };
+    if (!(await this.cas(key, next, old.etag)))
+      throw new WorkLogError("TAG_VERSION_CONFLICT", 409);
+    return next;
+  }
+  async deleteTag(subjectId, tagId) {
+    const key = this.key("tag", subjectId, tagId),
+      old = await this.read(key);
+    if (!old) throw new WorkLogError("TAG_NOT_FOUND", 404);
+    const tombstone = { ...old.value, deletedAt: this.now() };
+    if (!(await this.cas(key, tombstone, old.etag)))
+      throw new WorkLogError("TAG_VERSION_CONFLICT", 409);
+    return true;
   }
   async attachTag(subjectId, logId, tagId, expectedVersion) {
     if (!(await this.read(this.key("tag", subjectId, tagId))))
