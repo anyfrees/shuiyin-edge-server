@@ -62,6 +62,7 @@ export class WorkLogHttpService {
     exportService = null,
     exportEnabled = false,
     authorize = null,
+    autoDraftService = null,
   }) {
     this.repository = repository;
     this.authenticate = authenticate;
@@ -71,6 +72,7 @@ export class WorkLogHttpService {
     this.exportService = exportService;
     this.exportEnabled = exportEnabled;
     this.authorize = authorize || (async () => true);
+    this.autoDraftService = autoDraftService;
   }
   async body(request) {
     const size = Number(request.headers.get("content-length") || 0);
@@ -206,6 +208,8 @@ export class WorkLogHttpService {
                 payloadDigest: computed,
               }),
               c = x.capture;
+            // Derived work must never change capture acceptance semantics.
+            try { await this.autoDraftService?.enqueueAndProcess(subjectId, c); } catch {}
             results.push({
               clientCaptureId,
               status: x.status,
