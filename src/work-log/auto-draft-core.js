@@ -4,7 +4,7 @@ export const autoDraftEnabled = (env = {}) =>
 export const aiRefinementEnabled = (env = {}) =>
   clean(env.WORK_LOG_AI_REFINEMENT_V1_ENABLED).toLowerCase() === "true";
 
-const CATEGORY_LABELS = new Set(["事项", "工作事项", "类别", "类型", "说明"]);
+const CATEGORY_LABELS = new Set(["事项", "工作事项", "类别", "类型", "说明", "备注", "问题原因", "活动主题"]);
 const GENERIC_CATEGORY_VALUES = new Set(["现场记录", "工作记录", "水印模板"]);
 const fieldCategory = (capture) => {
   for (const field of capture.fields || []) {
