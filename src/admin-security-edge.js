@@ -3,6 +3,7 @@ import { pbkdf2Async } from '@noble/hashes/pbkdf2.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { ADMIN_ROLES, evaluateAdminAccess, validateDelegation } from './admin-authorization.js'
 import { EdgeNotificationService } from './notification-service-edge.js'
+import { EdgeOneSubjectEntitlementRepository, SubjectEntitlementService } from './subject-entitlement-core.js'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -237,6 +238,7 @@ const routePermission = (path, method) => {
   if (path.startsWith('/templates')) return { permission: method === 'DELETE' ? 'template.disable' : path.includes('grant-') ? 'grant.user' : 'template.update' }
   if (path.startsWith('/groups')) return { permission: method === 'GET' ? 'group.read' : 'group.update' }
   if (path.startsWith('/subjects')) return { permission: method === 'GET' ? 'template.read' : 'grant.user' }
+  if (path.startsWith('/subject-entitlements')) return { permission: 'grant.user' }
   return null
 }
 
@@ -389,8 +391,15 @@ export const createEdgeAdminHandler = ({ kv, env, forward, forwardToken, backupS
       await service.require(access,{permission:'template.read'})
       const subjects=await listValues(kv,'subject_'),direct=access.superAdmin?[]:await listValues(kv,'te_dg_'),memberships=access.superAdmin?[]:await listValues(kv,'te_mem_'),visible=new Set()
       if(!access.superAdmin){for(const grant of direct)if(access.templateScope.has(grant.templateId))visible.add(grant.subjectId);for(const membership of memberships)if(access.groupScope.has(membership.groupId))visible.add(membership.subjectId)}
-      const selected=subjects.filter(subject=>access.superAdmin||visible.has(subject.subjectId)),items=await Promise.all(selected.map(async subject=>{const metadata=await get(kv,'subject-meta',subject.subjectId);const remarkName=clean(metadata?.remarkName,80);return{publicId:subject.publicId,remarkName,displayName:remarkName||subject.publicId,status:subject.status,internal:Boolean(subject.internal),createdAt:subject.createdAt,lastSeenAt:subject.lastSeenAt}}))
+      const entitlementService=new SubjectEntitlementService(new EdgeOneSubjectEntitlementRepository(kv)),selected=subjects.filter(subject=>access.superAdmin||visible.has(subject.subjectId)),items=await Promise.all(selected.map(async subject=>{const metadata=await get(kv,'subject-meta',subject.subjectId),capabilities=await entitlementService.projection(subject.subjectId);const remarkName=clean(metadata?.remarkName,80);return{publicId:subject.publicId,remarkName,displayName:remarkName||subject.publicId,status:subject.status,internal:Boolean(subject.internal),createdAt:subject.createdAt,lastSeenAt:subject.lastSeenAt,capabilities}}))
       items.sort((a,b)=>Number(b.lastSeenAt||0)-Number(a.lastSeenAt||0));return json({ok:true,items})
+    }
+    const subjectEntitlementMatch=path.match(/^\/subjects\/([^/]+)\/entitlements\/([^/]+)$/)
+    if(subjectEntitlementMatch&&method==='PUT'){
+      const input=await bodyOf(request);if(typeof input.granted!=='boolean')throw fail('ENTITLEMENT_STATE_INVALID',400);await service.require(access,{permission:input.granted?'grant.user':'grant.revoke'});const publicId=decodeURIComponent(subjectEntitlementMatch[1]),subjectId=await kv.get(`public_${publicId}`);if(!subjectId)throw fail('SUBJECT_NOT_FOUND',404);const entitlements=new SubjectEntitlementService(new EdgeOneSubjectEntitlementRepository(kv)),requestId=clean(request.headers.get('x-request-id'),120)||`req_${random(12)}`,result=await entitlements.mutate({subjectId,capability:decodeURIComponent(subjectEntitlementMatch[2]),granted:input.granted,actorId:access.principal.adminId,requestId});await service.audit(access.principal.adminId,input.granted?'SUBJECT_CAPABILITY_GRANT':'SUBJECT_CAPABILITY_REVOKE','subject',publicId,'SUCCESS',{capability:subjectEntitlementMatch[2],requestId,auditId:result.auditId||null});return json({ok:true,result,capabilities:await entitlements.projection(subjectId)})
+    }
+    if(path==='/subject-entitlements/batch'&&method==='POST'){
+      const input=await bodyOf(request),action=String(input.action||'').toUpperCase();await service.require(access,{permission:action==='REVOKE'?'grant.revoke':'grant.user'});if(!Array.isArray(input.publicIds)||input.publicIds.length<1||input.publicIds.length>100)throw fail(input.publicIds?.length>100?'ENTITLEMENT_BATCH_TOO_LARGE':'ENTITLEMENT_BATCH_INVALID',400);const resolved=[],missing=[];for(const publicId of [...new Set(input.publicIds.map(x=>clean(x,120)))]){const subjectId=await kv.get(`public_${publicId}`);subjectId?resolved.push({publicId,subjectId}):missing.push({publicId,status:'NOT_FOUND'})}const requestId=clean(request.headers.get('x-request-id'),120)||`req_${random(12)}`,entitlements=new SubjectEntitlementService(new EdgeOneSubjectEntitlementRepository(kv)),batch=await entitlements.batch({subjectIds:resolved.map(x=>x.subjectId),capability:input.capability,action,actorId:access.principal.adminId,requestId}),ids=new Map(resolved.map(x=>[x.subjectId,x.publicId])),results=batch.results.map(x=>({...x,publicId:ids.get(x.subjectId),subjectId:undefined})).concat(missing);for(const item of results)await service.audit(access.principal.adminId,`SUBJECT_CAPABILITY_BATCH_${action}`,'subject',item.publicId,item.status==='FAILED'?'FAILED':'SUCCESS',{capability:input.capability,batchId:batch.batchId,requestId,status:item.status});return json({ok:true,batchId:batch.batchId,results})
     }
     const subjectMatch=path.match(/^\/subjects\/([^/]+)$/),subjectAccessMatch=path.match(/^\/subjects\/([^/]+)\/access$/)
     if(subjectAccessMatch&&method==='GET'){
