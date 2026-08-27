@@ -39,6 +39,7 @@ import { workLogEnabled } from "./work-log/core.js";
 import { WorkLogHttpService } from "./work-log/http-service.generated.js";
 import { ExportService } from "./work-log/export-core.generated.js";
 import { D1ExportRepository, EdgeOneArtifactStore, EdgeOneExportStore, R2ArtifactStore } from "./work-log/export-storage.js";
+import { D1SubjectEntitlementRepository, EdgeOneSubjectEntitlementRepository, SubjectEntitlementService } from "./subject-entitlement-core.js";
 
 // Some EdgeOne Edge Function isolates expose the Fetch API without the newer
 // Response.json() convenience method. Keep all generated handlers portable.
@@ -631,8 +632,10 @@ export async function handleRequest(request, env, kv) {
     const exportArtifacts = env.PROVENANCE_D1 && env.WORK_LOG_EXPORTS ? new R2ArtifactStore(env.WORK_LOG_EXPORTS) : edgeExportStore ? new EdgeOneArtifactStore(edgeExportStore) : null;
     const exportEnabled = workLogEnabled(env) && String(env.WORK_LOG_EXPORT_V1_ENABLED || "").toLowerCase() === "true" && Boolean(exportJobs && exportArtifacts);
     const exportService = exportJobs && exportArtifacts ? new ExportService({repository,jobs:exportJobs,artifacts:exportArtifacts}) : null;
+    const entitlementRepository=env.PROVENANCE_D1?new D1SubjectEntitlementRepository(env.PROVENANCE_D1):kv?new EdgeOneSubjectEntitlementRepository(kv):null;
+    const subjectEntitlements=entitlementRepository?new SubjectEntitlementService(entitlementRepository):null;
     if (!repository && workLogEnabled(env)) return json({ ok: false, code: "WORK_LOG_STORAGE_NOT_CONFIGURED" }, 503, headers);
-    const service = new WorkLogHttpService({repository,enabled:workLogEnabled(env),exportService,exportEnabled,cursorSecret:env.JILU_SUBJECT_DERIVATION_KEY||"work-log-v1-local",authenticate:async req=>{const token=bearer(req);try{const auth=await authService(env,kv).authenticate(token);return{subjectId:auth.subject.subjectId,authType:"MINI"}}catch(error){if(!kv)throw error;const hash=await sha256(token),session=JSON.parse(await kv.get(`creator:session:${hash}`)||"null");if(session?.subjectId&&session.expiresAt>Date.now())return{subjectId:session.subjectId,authType:"CREATOR"};throw error}},verifyProvenanceOwnership:async(subjectId,recordId)=>{if(env.PROVENANCE_D1)return Boolean(await env.PROVENANCE_D1.prepare("SELECT 1 ok FROM provenance_records WHERE subject_id=? AND record_id=?").bind(subjectId,recordId).first());if(env.PROVENANCE_BLOB){const record=await new EdgeOneBlobProvenanceCommitRepository(env.PROVENANCE_BLOB).getRecordById(recordId);return record?.subjectId===subjectId}return false}}),result=await service.handle(request),merged=new Headers(result.headers);Object.entries(headers).forEach(([key,value])=>merged.set(key,value));return new Response(result.body,{status:result.status,headers:merged});
+    const service = new WorkLogHttpService({repository,enabled:workLogEnabled(env),exportService,exportEnabled,cursorSecret:env.JILU_SUBJECT_DERIVATION_KEY||"work-log-v1-local",authorize:async(subjectId,capability)=>Boolean(subjectEntitlements&&await subjectEntitlements.isGranted(subjectId,capability)),authenticate:async req=>{const token=bearer(req);try{const auth=await authService(env,kv).authenticate(token);return{subjectId:auth.subject.subjectId,authType:"MINI"}}catch(error){if(!kv)throw error;const hash=await sha256(token),session=JSON.parse(await kv.get(`creator:session:${hash}`)||"null");if(session?.subjectId&&session.expiresAt>Date.now())return{subjectId:session.subjectId,authType:"CREATOR"};throw error}},verifyProvenanceOwnership:async(subjectId,recordId)=>{if(env.PROVENANCE_D1)return Boolean(await env.PROVENANCE_D1.prepare("SELECT 1 ok FROM provenance_records WHERE subject_id=? AND record_id=?").bind(subjectId,recordId).first());if(env.PROVENANCE_BLOB){const record=await new EdgeOneBlobProvenanceCommitRepository(env.PROVENANCE_BLOB).getRecordById(recordId);return record?.subjectId===subjectId}return false}}),result=await service.handle(request),merged=new Headers(result.headers);Object.entries(headers).forEach(([key,value])=>merged.set(key,value));return new Response(result.body,{status:result.status,headers:merged});
   }
   if (url.pathname === "/health" && request.method === "GET") {
     const response = healthResponse(env.PLATFORM_NAME || "edge-runtime");
@@ -921,13 +924,14 @@ export async function handleRequest(request, env, kv) {
       return json({ ok: false, code: "INVALID_JSON" }, 400, headers);
     }
     try {
-      const x = await authService(env, kv).login(input.loginCode);
+      const auth=authService(env,kv),x=await auth.login(input.loginCode),identity=(await auth.authenticate(x.token)).subject,entitlements=new SubjectEntitlementService(env.PROVENANCE_D1?new D1SubjectEntitlementRepository(env.PROVENANCE_D1):new EdgeOneSubjectEntitlementRepository(kv));
       return json(
         {
           ok: true,
           sessionToken: x.token,
           expiresAt: x.expiresAt,
           user: { publicId: x.publicId },
+          capabilities: await entitlements.projection(identity.subjectId),
         },
         200,
         headers,

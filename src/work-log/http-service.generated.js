@@ -61,6 +61,7 @@ export class WorkLogHttpService {
     verifyProvenanceOwnership = null,
     exportService = null,
     exportEnabled = false,
+    authorize = null,
   }) {
     this.repository = repository;
     this.authenticate = authenticate;
@@ -69,6 +70,7 @@ export class WorkLogHttpService {
     this.verifyProvenanceOwnership = verifyProvenanceOwnership;
     this.exportService = exportService;
     this.exportEnabled = exportEnabled;
+    this.authorize = authorize || (async () => true);
   }
   async body(request) {
     const size = Number(request.headers.get("content-length") || 0);
@@ -89,7 +91,7 @@ export class WorkLogHttpService {
       throw new WorkLogError("PAYLOAD_TOO_LARGE", 413);
     return cleanObject(body);
   }
-  async auth(request, miniOnly = false) {
+  async auth(request, miniOnly = false, exportRequired = false) {
     let value;
     try {
       value = await this.authenticate(request);
@@ -99,6 +101,10 @@ export class WorkLogHttpService {
     if (!value?.subjectId) throw new WorkLogError("UNAUTHORIZED", 401);
     if (miniOnly && value.authType !== "MINI")
       throw new WorkLogError("FORBIDDEN", 403);
+    if (!(await this.authorize(value.subjectId, "WORK_LOG_V1")))
+      throw new WorkLogError("WORK_LOG_NOT_ENTITLED", 403);
+    if (exportRequired && !(await this.authorize(value.subjectId, "WORK_LOG_EXPORT_V1")))
+      throw new WorkLogError("EXPORT_NOT_ENTITLED", 403);
     return value;
   }
   async encodeCursor(subjectId, filters, offset) {
@@ -134,20 +140,20 @@ export class WorkLogHttpService {
       if (path === "/v1/exports" && method === "POST") {
         if (!this.exportEnabled || !this.exportService)
           throw new WorkLogError("EXPORT_DISABLED", 503);
-        const { subjectId } = await this.auth(request), body = await this.body(request);
+        const { subjectId } = await this.auth(request, false, true), body = await this.body(request);
         return json({ ok: true, export: await this.exportService.create(subjectId, body) }, 202);
       }
       if (path === "/v1/exports" && method === "GET") {
         if (!this.exportEnabled || !this.exportService)
           throw new WorkLogError("EXPORT_DISABLED", 503);
-        const { subjectId } = await this.auth(request);
+        const { subjectId } = await this.auth(request, false, true);
         return json({ ok: true, items: await this.exportService.list(subjectId) });
       }
       let exportMatch = path.match(/^\/v1\/exports\/([^/]+)(\/download)?$/);
       if (exportMatch && method === "GET") {
         if (!this.exportEnabled || !this.exportService)
           throw new WorkLogError("EXPORT_DISABLED", 503);
-        const { subjectId } = await this.auth(request), exportId = decodeURIComponent(exportMatch[1]);
+        const { subjectId } = await this.auth(request, false, true), exportId = decodeURIComponent(exportMatch[1]);
         if (!exportMatch[2]) return json({ ok: true, export: await this.exportService.get(subjectId, exportId) });
         const artifact = await this.exportService.download(subjectId, exportId);
         return new Response(artifact.bytes, { status: 200, headers: {

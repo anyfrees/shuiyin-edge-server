@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS subject_capability_grants(subject_id TEXT NOT NULL,capability TEXT NOT NULL,granted INTEGER NOT NULL,updated_at INTEGER NOT NULL,updated_by TEXT NOT NULL,PRIMARY KEY(subject_id,capability));
+CREATE TABLE IF NOT EXISTS subject_capability_audit(audit_id TEXT PRIMARY KEY,actor_id TEXT NOT NULL,operation TEXT NOT NULL,capability TEXT NOT NULL,subject_id TEXT NOT NULL,old_state INTEGER NOT NULL,new_state INTEGER NOT NULL,timestamp INTEGER NOT NULL,batch_id TEXT,request_id TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_subject_capability_state ON subject_capability_grants(capability,granted,subject_id);
