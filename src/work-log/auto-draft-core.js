@@ -4,8 +4,19 @@ export const autoDraftEnabled = (env = {}) =>
 export const aiRefinementEnabled = (env = {}) =>
   clean(env.WORK_LOG_AI_REFINEMENT_V1_ENABLED).toLowerCase() === "true";
 
+const CATEGORY_LABELS = new Set(["事项", "工作事项", "类别", "类型", "说明"]);
+const GENERIC_CATEGORY_VALUES = new Set(["现场记录", "工作记录", "水印模板"]);
+const fieldCategory = (capture) => {
+  for (const field of capture.fields || []) {
+    const label = clean(field?.labelSnapshot || field?.label_snapshot);
+    const raw = Array.isArray(field?.value) && field.value.length === 1 ? field.value[0] : field?.value;
+    const value = clean(raw);
+    if (CATEGORY_LABELS.has(label) && value && value.length <= 40 && !/[\r\n]/.test(value) && !GENERIC_CATEGORY_VALUES.has(value)) return value;
+  }
+  return "";
+};
 export const captureCategory = (capture) =>
-  clean(capture.template?.nameSnapshot || capture.template_name_snapshot, "现场记录").slice(0, 100);
+  fieldCategory(capture) || clean(capture.template?.nameSnapshot || capture.template_name_snapshot, "现场记录").slice(0, 100);
 
 export const workLogGroupingKey = (capture) => {
   const project = clean(capture.project?.projectId || capture.project_id, "none");
