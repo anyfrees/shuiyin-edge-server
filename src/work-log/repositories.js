@@ -261,6 +261,8 @@ export class D1WorkLogRepository {
       .run();
     if (!resultChanges(r))
       throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+    if (!automatic && patch.summary !== undefined)
+      await this.db.prepare("UPDATE work_log_auto_metadata SET user_edited_summary=1,updated_at=? WHERE subject_id=? AND log_id=?").bind(this.now(),subjectId,logId).run().catch(()=>null);
     return this.first(
       "SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",
       subjectId,
@@ -432,6 +434,8 @@ export class D1WorkLogRepository {
         itemId,
       )
       .run();
+    const changed=["category","title","content","result","note","startAt","endAt","sortOrder"].filter(key=>input[key]!==undefined),meta=changed.length&&await this.first("SELECT user_edited_fields_json FROM work_log_auto_item_metadata WHERE subject_id=? AND item_id=?",subjectId,itemId).catch(()=>null);
+    if(meta)await this.db.prepare("UPDATE work_log_auto_item_metadata SET user_edited_fields_json=?,updated_at=? WHERE subject_id=? AND item_id=?").bind(JSON.stringify([...new Set([...JSON.parse(meta.user_edited_fields_json||"[]"),...changed])]),this.now(),subjectId,itemId).run();
     return this.first(
       "SELECT * FROM work_log_items WHERE subject_id=? AND item_id=?",
       subjectId,
@@ -1126,6 +1130,10 @@ export class EdgeOneBlobWorkLogRepository {
         projectNameSnapshot:
           patch.projectNameSnapshot ?? current.projectNameSnapshot,
         updatedAt: this.now(),
+        userEditedSummary:
+          current.autoManaged && !automatic && patch.summary !== undefined
+            ? true
+            : current.userEditedSummary,
       };
     });
   }
@@ -1226,6 +1234,9 @@ export class EdgeOneBlobWorkLogRepository {
         endAt: input.endAt ?? old.endAt,
         sortOrder: input.sortOrder ?? old.sortOrder,
         updatedAt: this.now(),
+        userEditedFields: old.autoManaged
+          ? [...new Set([...(old.userEditedFields || []), ...["category","title","content","result","note","startAt","endAt","sortOrder"].filter((key) => input[key] !== undefined)])]
+          : old.userEditedFields,
       };
       return { ...current, items, updatedAt: this.now() };
     });
