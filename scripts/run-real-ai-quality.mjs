@@ -1,0 +1,20 @@
+import fs from "node:fs";
+import { parseAndValidatePolishResult } from "../../shuiyin-server/src/work-log/ai-polish-core.js";
+
+const item=(itemKey,category,{locations=[],actions=[],objects=[],issues=[],results=[],purposes=[],description=""}={})=>({itemKey,category,locations,actions,objects,issues,results,purposes,description});
+const fixtures=[
+ {id:1,name:"真实混合样本",facts:{date:"2026-08-28",items:[item("item-1","设备巡检",{locations:["四为楼","四端楼"],actions:["巡检"],objects:["设备"],description:"设备巡检"}),item("item-2","大屏故障",{locations:["实验楼"],objects:["大屏"],issues:["大屏故障"],description:"大屏故障"}),item("item-3","设备盘点",{locations:["四象楼"],actions:["盘点"],objects:["教室班主任监控相机"],purposes:["核对各班设备配置情况"],description:"教室班主任监控相机设备盘点数量，确保每个班都有"}),item("item-4","一卡通业务",{actions:["办理补卡"],objects:["一卡通"],description:"一卡通办理补卡业务"})]},ruleDraft:"开展设备巡检工作，记录大屏故障情况，记录设备盘点及一卡通业务。"},
+ {id:2,name:"故障无结果",facts:{date:"2026-08-28",items:[item("item-1","大屏故障",{locations:["实验楼"],objects:["大屏"],issues:["大屏故障"],description:"大屏故障"})]},ruleDraft:"记录大屏故障情况。"},
+ {id:3,name:"故障有动作无结果",facts:{date:"2026-08-28",items:[item("item-1","大屏无信号",{locations:["实验楼"],actions:["检查线路","重新连接线路"],objects:["大屏","线路"],issues:["大屏无信号"],description:"检查线路并重新连接"})]},ruleDraft:"开展大屏无信号检查工作。"},
+ {id:4,name:"故障有明确结果",facts:{date:"2026-08-28",items:[item("item-1","大屏无信号",{locations:["实验楼"],actions:["重新连接线路"],objects:["大屏","线路"],issues:["大屏无信号"],results:["恢复正常"],description:"重新连接线路"})]},ruleDraft:"开展大屏无信号处理工作；工作结果：恢复正常。"},
+ {id:5,name:"多地点巡检",facts:{date:"2026-08-28",items:[item("item-1","设备巡检",{locations:["四为楼","四端楼"],actions:["巡检"],objects:["信息化设备"],description:"设备巡检"})]},ruleDraft:"开展设备巡检工作。"},
+ {id:6,name:"活动保障无结果",facts:{date:"2026-08-28",items:[item("item-1","活动保障",{locations:["报告厅"],actions:["会场设备检查","现场值守"],objects:["会场设备"],description:"新生入学教育活动保障"})]},ruleDraft:"开展新生入学教育活动保障工作。"},
+ {id:7,name:"一卡通补卡无数量",facts:{date:"2026-08-28",items:[item("item-1","一卡通业务",{actions:["办理补卡"],objects:["一卡通"],description:"一卡通补卡"})]},ruleDraft:"记录一卡通补卡业务。"},
+ {id:8,name:"数据录入",facts:{date:"2026-08-28",items:[item("item-1","数据录入",{actions:["录入","核对"],objects:["资产台账"],description:"录入并核对资产台账信息"})]},ruleDraft:"开展资产台账数据录入工作。"},
+ {id:9,name:"Custom DIY",facts:{date:"2026-08-28",items:[item("item-1","弱电井检查",{locations:["四象楼"],actions:["检查"],objects:["弱电井标签","线缆"],issues:["标签模糊"],description:"检查弱电井标签和线缆，记录标签模糊情况"})]},ruleDraft:"开展弱电井检查工作。"},
+ {id:10,name:"四类混合事项",facts:{date:"2026-08-28",items:[item("item-1","网络巡检",{locations:["行政楼"],actions:["巡检"],objects:["网络设备"],description:"网络设备巡检"}),item("item-2","监控故障",{locations:["教学楼"],objects:["监控相机"],issues:["画面异常"],description:"监控相机画面异常"}),item("item-3","会场调试",{locations:["报告厅"],actions:["调试"],objects:["音频设备"],description:"调试会场音频设备"}),item("item-4","资产盘点",{locations:["库房"],actions:["盘点"],objects:["备用设备"],description:"盘点备用设备"})]},ruleDraft:"开展网络巡检、会场调试及资产盘点工作，记录监控故障情况。"},
+];
+const endpoint=process.env.AI_SMOKE_URL||"http://127.0.0.1:8791",temperature=Number(process.env.AI_TEMPERATURE||0.2);
+const reports=[];
+for(const fixture of fixtures){const started=Date.now();let response,body,guard="NOT_RUN",error=null;try{response=await fetch(endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({temperature,facts:fixture.facts})});body=await response.json();if(!body.ok)throw Object.assign(new Error(body.code),{code:body.code});parseAndValidatePolishResult(body.result,fixture.facts);guard="PASS"}catch(e){error=e.code||e.message;guard="REJECT"}reports.push({...fixture,aiDraft:body?.result||null,factGuard:guard,error,latencyMs:body?.latencyMs??Date.now()-started,usage:body?.metadata?.usage||null});console.log(`${fixture.id}/10 ${guard} ${error||""} ${body?.latencyMs||""}ms`)}
+const out=new URL(`../../shuiyin/WORK_LOG_V1_PHASE8_4R_A_REAL_SAMPLES_T${String(temperature).replace(".","_")}.json`,import.meta.url);fs.writeFileSync(out,JSON.stringify({generatedAt:new Date().toISOString(),model:"@cf/qwen/qwen3-30b-a3b-fp8",temperature,reports},null,2));console.log(out.pathname);

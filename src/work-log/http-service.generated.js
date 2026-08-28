@@ -63,6 +63,7 @@ export class WorkLogHttpService {
     exportEnabled = false,
     authorize = null,
     autoDraftService = null,
+    aiPolishService = null,
   }) {
     this.repository = repository;
     this.authenticate = authenticate;
@@ -73,6 +74,7 @@ export class WorkLogHttpService {
     this.exportEnabled = exportEnabled;
     this.authorize = authorize || (async () => true);
     this.autoDraftService = autoDraftService;
+    this.aiPolishService = aiPolishService;
   }
   async body(request) {
     const size = Number(request.headers.get("content-length") || 0);
@@ -419,6 +421,14 @@ export class WorkLogHttpService {
           version,
         );
         return json(null, 204);
+      }
+      m = path.match(/^\/v1\/work-logs\/([^/]+)\/ai-polish$/);
+      if (m && method === "POST") {
+        const { subjectId } = await this.auth(request);
+        if (!(await this.authorize(subjectId, "WORK_LOG_AI_V1"))) throw new WorkLogError("WORK_LOG_AI_NOT_ENTITLED", 403);
+        const result = await this.aiPolishService?.polish(subjectId, decodeURIComponent(m[1]), { mode: "MANUAL" });
+        if (!result || result.status === "DISABLED") throw new WorkLogError("WORK_LOG_AI_DISABLED", 503);
+        return json({ ok: true, polish: result, workLog: await this.repository.getWorkLog(subjectId, decodeURIComponent(m[1])) });
       }
       m = path.match(/^\/v1\/work-logs\/([^/]+)\/(finalize|archive|restore)$/);
       if (m && method === "POST") {

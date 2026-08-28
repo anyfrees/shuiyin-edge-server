@@ -38,6 +38,7 @@ import { D1WorkLogRepository, EdgeOneBlobWorkLogRepository } from "./work-log/re
 import { workLogEnabled } from "./work-log/core.js";
 import { autoDraftEnabled } from "./work-log/auto-draft-core.js";
 import { D1AutoDraftAdapter, EdgeOneAutoDraftAdapter } from "./work-log/auto-draft-adapters.js";
+import { handleWorkersAIGateway } from "./work-log/workers-ai-provider.js";
 import { WorkLogHttpService } from "./work-log/http-service.generated.js";
 import { ExportService } from "./work-log/export-core.generated.js";
 import { D1ExportRepository, EdgeOneArtifactStore, EdgeOneExportStore, R2ArtifactStore } from "./work-log/export-storage.js";
@@ -627,6 +628,7 @@ export async function handleRequest(request, env, kv) {
   const headers = corsHeaders(request, env);
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers });
+  if (url.pathname === "/internal/work-log-ai/refine") return handleWorkersAIGateway(request, env);
   if (/^\/v1\/(?:captures|work-logs|projects|project-match-rules|tags|exports)(?:\/|$)/.test(url.pathname)) {
     const repository = env.PROVENANCE_D1 ? new D1WorkLogRepository(env.PROVENANCE_D1) : env.PROVENANCE_BLOB ? new EdgeOneBlobWorkLogRepository(env.PROVENANCE_BLOB) : null;
     const edgeExportStore = env.PROVENANCE_BLOB ? new EdgeOneExportStore(env.PROVENANCE_BLOB) : null;

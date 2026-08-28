@@ -11,6 +11,7 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "ai": { "binding": "AI" },
   "kv_namespaces": [
     {
       "binding": "PROVENANCE_KV"
@@ -21,6 +22,10 @@
     "ALLOWED_ORIGIN": "https://shuiyin.nnu.cn",
     "PROVENANCE_REQUIRE_INTEGRITY_V2": "true",
     "WECHAT_APP_ID": "wx9321e5acb8f5745e"
+    ,"WORK_LOG_AI_REFINEMENT_ENABLED": "false"
+    ,"WORK_LOG_AI_AUTO_POLISH_ENABLED": "false"
+    ,"WORK_LOG_AI_PROVIDER": "workers_ai"
+    ,"WORK_LOG_AI_MODEL": "@cf/qwen/qwen3-30b-a3b-fp8"
   },
   "secrets": {
     "required": ["WECHAT_APP_SECRET", "JILU_IDENTITY_HMAC_KEY", "JILU_SUBJECT_DERIVATION_KEY", "TENCENT_MAP_KEY", "JILU_CAPTURE_TICKET_KEYS", "JILU_PROVENANCE_RECEIPT_KEYS"]
