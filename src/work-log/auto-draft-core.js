@@ -47,14 +47,29 @@ export const ruleBasedDraft = (capture, count = 1) => {
   };
 };
 
-export const ruleBasedSummary = (categories, count, projectName = "") => {
-  const unique = [...new Set(categories.map((value) => clean(value)).filter(Boolean))];
-  const visible = unique.slice(0, 4);
-  const subjects = visible.length
-    ? `${visible.join("、")}${unique.length > visible.length ? `等 ${unique.length} 项工作` : ""}`
-    : "现场工作";
-  const project = clean(projectName);
-  return `今日${project ? `在“${project}”项目` : ""}记录了${subjects}，共形成 ${count} 条现场记录。`;
+const joinChinese = (values) => values.length < 2 ? (values[0] || "") : `${values.slice(0, -1).join("、")}及${values.at(-1)}`;
+export const ruleBasedSummary = (entries) => {
+  const items = (entries || []).map((entry) => typeof entry === "string"
+    ? { category: clean(entry), result: "" }
+    : { category: clean(entry?.category), result: clean(entry?.result) }).filter((item) => item.category && !GENERIC_CATEGORY_VALUES.has(item.category));
+  const categories = [...new Set(items.map((item) => item.category))];
+  const clauses = [], routine = [], activities = [], faults = [], other = [];
+  for (const category of categories) {
+    if (category.includes("活动保障")) {
+      const detail = clean(category.replace(/^活动保障[，,：:\s]*(?:主题[：:\s]*)?/, ""));
+      if (detail) activities.push(detail);
+      else routine.push("活动保障");
+    } else if (/故障$/.test(category)) faults.push(clean(category.replace(/故障$/, "")) || "设备");
+    else if (/巡检|检查|排查|调试|处理|维修|保障/.test(category)) routine.push(category);
+    else other.push(category);
+  }
+  if (routine.length) clauses.push(`开展${joinChinese(routine)}工作`);
+  if (activities.length) clauses.push(`开展${joinChinese(activities)}的活动保障工作`);
+  if (faults.length) clauses.push(`记录${joinChinese(faults)}故障情况`);
+  if (other.length) clauses.push(`记录${joinChinese(other)}相关工作`);
+  if (!clauses.length) clauses.push("记录现场工作情况");
+  const results = [...new Set(items.map((item) => item.result).filter(Boolean))];
+  return `${clauses.join("，")}${results.length ? `；工作结果：${joinChinese(results)}` : ""}。`;
 };
 
 export const assertFactSafeSuggestion = (suggestion, sourceFacts) => {
