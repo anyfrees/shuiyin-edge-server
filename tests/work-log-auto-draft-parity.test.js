@@ -214,12 +214,13 @@ test("PARITY-AUTO EdgeOne scenarios, CAS, recovery, replay and no-photo", async 
   assert.equal(partial.auto.status, "RETRY_WAIT");
   await e.auto.reconcile({ subjectId: subject });
   logs = await e.repo.listWorkLogs(subject, { limit: 20 });
-  assert.equal(logs.filter((x) => x.projectId === "B").length, 1);
+  assert.equal(logs.length, 2);
+  assert.ok(logs.some((x) => x.items.some((item) => item.autoGroupingKey?.includes("|B|"))));
   assert.equal(
     [...e.store.data.keys()].some((k) => /image|photo-bytes|album/i.test(k)),
     false,
   );
-  assert.equal(semantic(logs).length, 3);
+  assert.equal(semantic(logs).length, 2);
 });
 test("PARITY-AUTO EdgeOne 20 concurrent and CAS conflict", async () => {
   const e = edgeHarness();
@@ -379,7 +380,9 @@ test("PARITY-AUTO Wrangler D1 gap, project/date and 20 concurrent", async (t) =>
     snap({ project: "A", date: "2026-08-28", at: "2026-08-28T08:00:00Z" }),
   );
   logs = (await call("aggregate", runSubject)).result;
-  assert.equal(logs.length, 3);
+  assert.equal(logs.length, 2);
+  assert.equal(logs.filter((x) => x.local_date === "2026-08-27").length, 1);
+  assert.equal(logs.find((x) => x.local_date === "2026-08-27").items.length, 3);
   const concurrentSubject = `sub_${randomBytes(12).toString("hex")}`,
     addConcurrent = async (s) =>
       call("captureAndProcess", {
@@ -474,7 +477,7 @@ test("RUNTIME-PARITY EdgeOne activates historical facts and preserves no-op repl
   log = await e.repo.getWorkLog(subject, log.logId);
   assert.notEqual(log.items[0].content, old);
   assert.match(log.summary, /记录食堂显示屏断电情况/);
-  assert.match(log.summary, /针对运动馆监控设备故障情况，更换相关设备/);
+  assert.match(log.summary, /运动馆监控设备出现故障，现场对相关设备进行更换/);
   for (const item of log.items) {
     assert.equal(item.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V1");
     assert.match(item.factDigest, /^facts-v1-/);
@@ -566,7 +569,7 @@ test("RUNTIME-PARITY Wrangler D1 and EdgeOne historical outputs are byte-identic
   await add(two, true);
   const log = (await call("aggregate", runSubject)).result[0];
   assert.match(log.summary, /记录食堂显示屏断电情况/);
-  assert.match(log.summary, /针对运动馆监控设备故障情况，更换相关设备/);
+  assert.match(log.summary, /运动馆监控设备出现故障，现场对相关设备进行更换/);
   for (const item of log.items) {
     const generated = JSON.parse(item.generated_fields_json);
     assert.equal(generated.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V1");
