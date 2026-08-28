@@ -37,6 +37,7 @@ import { EdgeNotificationService } from "./notification-service-edge.js";
 import { D1WorkLogRepository, EdgeOneBlobWorkLogRepository } from "./work-log/repositories.js";
 import { workLogEnabled } from "./work-log/core.js";
 import { autoDraftEnabled } from "./work-log/auto-draft-core.js";
+import { semanticDraftEnabled } from "./work-log/chinese-draft-planner.generated.js";
 import { D1AutoDraftAdapter, EdgeOneAutoDraftAdapter } from "./work-log/auto-draft-adapters.js";
 import { handleWorkersAIGateway } from "./work-log/workers-ai-provider.js";
 import { WorkLogHttpService } from "./work-log/http-service.generated.js";
@@ -639,7 +640,7 @@ export async function handleRequest(request, env, kv) {
     const entitlementRepository=env.PROVENANCE_D1?new D1SubjectEntitlementRepository(env.PROVENANCE_D1):kv?new EdgeOneSubjectEntitlementRepository(kv):null;
     const subjectEntitlements=entitlementRepository?new SubjectEntitlementService(entitlementRepository):null;
     if (!repository && workLogEnabled(env)) return json({ ok: false, code: "WORK_LOG_STORAGE_NOT_CONFIGURED" }, 503, headers);
-    const autoDraftService=autoDraftEnabled(env)?(env.PROVENANCE_D1?new D1AutoDraftAdapter(env.PROVENANCE_D1):repository instanceof EdgeOneBlobWorkLogRepository?new EdgeOneAutoDraftAdapter(repository):null):null;
+    const autoDraftService=autoDraftEnabled(env)?(env.PROVENANCE_D1?new D1AutoDraftAdapter(env.PROVENANCE_D1,{semanticDraft:semanticDraftEnabled(env)}):repository instanceof EdgeOneBlobWorkLogRepository?new EdgeOneAutoDraftAdapter(repository,{semanticDraft:semanticDraftEnabled(env)}):null):null;
     const service = new WorkLogHttpService({repository,enabled:workLogEnabled(env),autoDraftService,exportService,exportEnabled,cursorSecret:env.JILU_SUBJECT_DERIVATION_KEY||"work-log-v1-local",authorize:async(subjectId,capability)=>Boolean(subjectEntitlements&&await subjectEntitlements.isGranted(subjectId,capability)),authenticate:async req=>{const token=bearer(req);try{const auth=await authService(env,kv).authenticate(token);return{subjectId:auth.subject.subjectId,authType:"MINI"}}catch(error){if(!kv)throw error;const hash=await sha256(token),session=JSON.parse(await kv.get(`creator:session:${hash}`)||"null");if(session?.subjectId&&session.expiresAt>Date.now())return{subjectId:session.subjectId,authType:"CREATOR"};throw error}},verifyProvenanceOwnership:async(subjectId,recordId)=>{if(env.PROVENANCE_D1)return Boolean(await env.PROVENANCE_D1.prepare("SELECT 1 ok FROM provenance_records WHERE subject_id=? AND record_id=?").bind(subjectId,recordId).first());if(env.PROVENANCE_BLOB){const record=await new EdgeOneBlobProvenanceCommitRepository(env.PROVENANCE_BLOB).getRecordById(recordId);return record?.subjectId===subjectId}return false}}),result=await service.handle(request),merged=new Headers(result.headers);Object.entries(headers).forEach(([key,value])=>merged.set(key,value));return new Response(result.body,{status:result.status,headers:merged});
   }
   if (url.pathname === "/health" && request.method === "GET") {
