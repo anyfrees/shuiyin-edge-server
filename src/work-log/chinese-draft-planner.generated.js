@@ -4,7 +4,7 @@ export const semanticDraftEnabled = (env = {}) => String(env.WORK_LOG_SEMANTIC_D
 const clean = (value) => String(value ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
 const unique = (values) => [...new Set(values.map(clean).filter(Boolean))];
 const ACTIONS = ["巡检","检查","核对","盘点","录入","配置","调试","排查","处理","维修","修复","更换","安装","部署","办理","保障","测试","登记","整理","归档","重启","插上"];
-const ISSUES = ["故障","异常","离线","无信号","黑屏","断网","中断","卡顿","损坏","报错","告警"];
+const ISSUES = ["故障","异常","离线","无信号","黑屏","断电","断网","中断","卡顿","损坏","报错","告警"];
 const RESULTS = ["恢复正常","处理完成","恢复使用","已解决","已更换","已完成","已修复","验收通过"];
 const NEGATIVE = ["暂未恢复","仍异常","暂未处理","未处理","待处理"];
 const GENERIC = new Set(["现场记录","工作记录","水印模板","事项","说明"]);
@@ -68,9 +68,9 @@ export const planWorkLogItem = (source = {}) => {
   let title,content,type="OTHER";
   const natural=facts.descriptions.find((value)=>value.length>=10&&/[。！？]$/.test(value)&&facts.actions.some((word)=>value.includes(word))&&!value.includes("确保"));
   if (natural) {type=result?"RESULT_ITEM":"ACTION_ITEM";title=shortObject(issue&&action?`${object||""}故障处理`:(object?`${object}${action||"记录"}`:clean(source.category)||action));content=locations&&!natural.includes(locations)?`${locations}${natural}`:natural;}
-  else if (action) { type="ACTION_ITEM"; title=shortObject(object ? `${object}${action}` : clean(source.category || action)); const target=[locations,object&&shortObject(object),quantity].filter(Boolean).join(""); if(action==="办理")content=`办理${object||clean(source.category)}`;else if(action==="录入")content=`录入${target||clean(source.category)}`;else if(action==="保障")content=`开展${target||clean(source.category)}保障`;else if(action==="盘点")content=`对${target||clean(source.category)}开展数量盘点`;else {const actionTarget=issue?`${locations||""}${issue.includes(object||"\0")?issue:`${object||""}${issue}`}问题`:target;content=`${actionTarget?`对${actionTarget}`:""}进行${action}`;} }
+  else if (action) { type="ACTION_ITEM"; title=shortObject(object ? `${object}${action}` : clean(source.category || action)); const target=[locations,object&&shortObject(object),quantity].filter(Boolean).join(""); if(action==="办理")content=`办理${object||clean(source.category)}`;else if(action==="录入")content=`录入${target||clean(source.category)}`;else if(action==="保障")content=`开展${target||clean(source.category)}保障`;else if(action==="盘点")content=`对${target||clean(source.category)}开展数量盘点`;else if(issue){const stem=clean(object).replace(/(?:相关)?(?:设备|业务|相机)$/u,"");const issueCore=stem&&issue.startsWith(stem)?issue.slice(stem.length):issue;const subject=`${locations||""}${object||""}${issueCore||"故障"}`;content=action==="更换"?`针对${subject}情况，更换相关设备`:`针对${subject}情况进行${action}`;}else content=`${target?`对${target}`:""}进行${action}`; }
   else if (issue) { type="ISSUE_ONLY_ITEM"; title=shortObject(object?`${object}故障记录`:issue); const issueText=object&&issue.includes(object)?issue:`${object||""}${issue}`;content=`记录${locations||""}${issueText}情况`; }
-  else { const description=facts.descriptions[0]||"现场工作情况"; title=shortObject(clean(source.category)||description); content=/[。！？]$/.test(description)?description:`记录：${description}`; }
+  else { const description=facts.descriptions[0]||"现场工作情况"; title=shortObject(clean(source.category)||description); content=/[。！？]$/.test(description)?description:`记录${description}情况`; }
   content=content.replace(/[。！？]$/,"");
   if (purpose && !content.includes(purpose)) content+=`，${purpose}`;
   if (result) { type="RESULT_ITEM"; if(!content.includes(result))content+=`，${result}`; }
