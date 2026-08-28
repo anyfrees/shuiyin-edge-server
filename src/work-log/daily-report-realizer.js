@@ -14,6 +14,36 @@ export const PHRASE_COMPLETENESS = Object.freeze({
   COMPLETE_DESCRIPTION:"COMPLETE_DESCRIPTION",
   COMPLETE_SENTENCE:"COMPLETE_SENTENCE",
 });
+export const RESULT_SEMANTIC_CLASS = Object.freeze({
+  ACTION_COMPLETION_RESULT:"ACTION_COMPLETION_RESULT",
+  STATE_CHANGE_RESULT:"STATE_CHANGE_RESULT",
+  NEGATIVE_RESULT:"NEGATIVE_RESULT",
+  INDEPENDENT_RESULT:"INDEPENDENT_RESULT",
+  UNKNOWN_RESULT:"UNKNOWN_RESULT",
+});
+const ACTION_CLASS_BY_TERM = new Map([
+  ["修复","REPAIR"],["维修","REPAIR"],["处理","HANDLE"],["更换","REPLACE"],
+  ["办理","REGISTER"],["调试","DEBUG"],["排查","INSPECT"],["检查","CHECK"],
+  ["盘点","INVENTORY"],["恢复","RESTORE"],
+]);
+export const canonicalActionClass = (value) => ACTION_CLASS_BY_TERM.get(clean(value)) || "OTHER";
+export const classifyActionResult = ({action, result} = {}) => {
+  const actionText = clean(action), resultText = clean(result), actionClass = canonicalActionClass(actionText);
+  const completion = resultText.match(/^已(?:经)?(修复|维修|处理|更换|办理)$/u);
+  const resultActionClass = canonicalActionClass(completion?.[1]);
+  let resultClass = RESULT_SEMANTIC_CLASS.UNKNOWN_RESULT;
+  if (/(?:暂未|尚未|仍未|未恢复|仍异常|仍存在|待处理|未解决)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.NEGATIVE_RESULT;
+  else if (completion && resultActionClass === actionClass && actionClass !== "OTHER") resultClass = RESULT_SEMANTIC_CLASS.ACTION_COMPLETION_RESULT;
+  else if (/(?:恢复(?:正常|供电|运行)|正常运行|问题(?:已)?解决|故障原因(?:已)?定位|原因(?:已)?定位)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.STATE_CHANGE_RESULT;
+  else if (/(?:共?确认\s*\d+|数量(?:已)?确认|状态(?:已)?确认)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.INDEPENDENT_RESULT;
+  const overlap = resultClass === RESULT_SEMANTIC_CLASS.ACTION_COMPLETION_RESULT;
+  return {
+    actionClass,
+    resultClass,
+    overlap,
+    reason:overlap ? `RESULT_COMPLETION_MORPHOLOGY_MATCHES_${actionClass}` : "RESULT_CONTAINS_INDEPENDENT_OR_UNKNOWN_INFORMATION",
+  };
+};
 const actionLead = /^(?:现场)?(?:完成|开展|检查|巡检|排查|调试|处理|保障|记录|办理|更换|维修|重启|恢复|核对|针对)/u;
 const predicateShape = /(?:不显示|未开|未恢复|仍未|暂未|异常|离线|掉线|断电|断网|黑屏|中断|损坏|松动|故障|恢复|进行(?:检查|巡检|排查|调试|处理|保障|更换|维修|重启)|已(?:完成|恢复|解决|处理))/u;
 const semanticRoleOf = (source, facts) => clean(source.semanticRole || source.semantic_role ||
@@ -65,6 +95,7 @@ export const realizeDailyReportEntry = (source = {}) => {
   const purposes = unique(facts.purposes), quantities = unique(facts.quantities);
   const location = locationsText(facts.locations), object = objectText(objects[0]);
   const action = actions[0], issue = issues[0], result = results[0], negative = negatives[0];
+  const resultSemantic = classifyActionResult({action,result});
   const purpose = purposes[0], quantity = quantities[0], natural = naturalDescription(source, facts);
   let text, wrapperApplied = false;
 
@@ -100,7 +131,7 @@ export const realizeDailyReportEntry = (source = {}) => {
     wrapperApplied = true;
   }
 
-  if (result && !text.includes(result)) {
+  if (result && !text.includes(result) && !resultSemantic.overlap) {
     text += action ? `，${action}完成后${result}` : `，${result}`;
   }
   if (negative && !text.includes(negative)) text += `，目前${negative}`;
@@ -114,6 +145,8 @@ export const realizeDailyReportEntry = (source = {}) => {
     phraseType:natural?.phraseType || classifyPhraseCompleteness({text:unique(facts.descriptions)[0],semanticRole:semanticRoleOf(source,facts)}),
     semanticRole:natural?.semanticRole || semanticRoleOf(source,facts),
     wrapperApplied,
+    resultSemantic,
+    suppressedRedundantResult:Boolean(result && !text.includes(result) && resultSemantic.overlap),
   };
 };
 
