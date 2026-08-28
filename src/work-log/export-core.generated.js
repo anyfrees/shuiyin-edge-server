@@ -104,6 +104,7 @@ const readableExport = (model) => {
     range:{dateFrom:model.query?.dateFrom||null,dateTo:model.query?.dateTo||null},
     workLogs:(model.logs || []).map((log) => {
       const entries=numberedEntries(log.summary), logItems=itemsByLog.get(log.logId)||[];
+      logItems.sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0)||Number(a.createdAt||0)-Number(b.createdAt||0)||String(a.itemId).localeCompare(String(b.itemId)));
       const projects=[...new Set(logItems.flatMap((item)=>(linksByItem.get(item.itemId)||[]).map((link)=>captureById.get(link.captureId)?.project?.projectNameSnapshot)).filter(Boolean))];
       return { localDate:log.localDate,title:log.title,summary:log.summary,status:log.status,recordType:Number(log.sequence)>1?"SUPPLEMENTAL":"DAILY",projects,createdAt:log.createdAt,updatedAt:log.updatedAt,
         items:logItems.map((item,index)=>{const linked=(linksByItem.get(item.itemId)||[]).map((link)=>captureById.get(link.captureId)).filter(Boolean);return {order:index+1,dailyReportEntry:entries[index]?.text||item.content||item.title,title:item.title,content:item.content,result:item.result,note:item.note,projects:[...new Set(linked.map((c)=>c.project?.projectNameSnapshot).filter(Boolean))],locations:[...new Set(linked.flatMap((c)=>[c.location?.name,c.location?.building,c.location?.address]).filter(Boolean))],category:item.category,startAt:item.startAt,endAt:item.endAt,createdAt:item.createdAt,updatedAt:item.updatedAt};}) };
