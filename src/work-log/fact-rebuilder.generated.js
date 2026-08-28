@@ -9,7 +9,7 @@ export const rebuildWorkLogItemFacts = (item = {}) => {
   const captures = capturesOf(item);
   const generated = generatedFields(item);
   let facts, source, recoverable = false;
-  if (captures.length) { facts = semanticDraftForCaptures(captures).atomicFacts; source = "CAPTURE_STRUCTURED_FACTS"; recoverable = true; }
+  if (captures.length) { const captureFacts=semanticDraftForCaptures(captures).atomicFacts;facts=item.capturesComplete===false&&generated.atomicFacts?aggregateAtomicWorkFacts([{atomicFacts:generated.atomicFacts},{atomicFacts:captureFacts}]):captureFacts; source = "CAPTURE_STRUCTURED_FACTS"; recoverable = true; }
   else if (generated.atomicFacts) { facts = normalizeAtomicWorkFacts({ atomicFacts:generated.atomicFacts }); source = "ITEM_NORMALIZED_FACTS"; recoverable = true; }
   else { facts = normalizeAtomicWorkFacts({ category:item.category,title:item.title,content:item.content,result:item.result,firstCaptureAt:item.firstCaptureAt ?? item.first_capture_at }); source = "LEGACY_PRESENTATION_FALLBACK"; }
   const plan = planWorkLogItem({ category:item.category, atomicFacts:facts });
