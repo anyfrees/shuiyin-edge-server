@@ -5,6 +5,7 @@ import {
   transitionAllowed,
   validateCaptureSnapshot,
 } from "./core.js";
+import { validateProjectGeofenceInput } from "./project-geofence-core.js";
 const json = (value) => JSON.stringify(value ?? null),
   parse = (value) => (value == null ? null : JSON.parse(value));
 const resultChanges = (result) =>
@@ -91,8 +92,9 @@ export class D1WorkLogRepository {
           now,
           now,
         );
+    const matchStmt=Object.hasOwn(p,"projectMatchSource")?this.db.prepare("INSERT INTO capture_project_matches(subject_id,capture_id,match_source,rule_id,rule_version,matched_at) VALUES(?,?,?,?,?,?)").bind(subjectId,captureId,p.projectMatchSource||(p.projectId?"DEFAULT_PROJECT":"NONE"),p.projectMatchRuleId||null,Number.isInteger(p.projectMatchRuleVersion)?p.projectMatchRuleVersion:null,Number.isFinite(p.projectMatchedAt)?p.projectMatchedAt:null):null;
     try {
-      await stmt.run();
+      if(matchStmt&&typeof this.db.batch==="function")await this.db.batch([stmt,matchStmt]);else{await stmt.run();if(matchStmt)await matchStmt.run()}
     } catch (error) {
       const after = await this.first(
         "SELECT * FROM capture_events WHERE subject_id=? AND client_capture_id=?",
@@ -611,6 +613,12 @@ export class D1WorkLogRepository {
     if (!resultChanges(r)) throw new WorkLogError("PROJECT_NOT_FOUND", 404);
     return this.getProject(subjectId, projectId);
   }
+  async listProjectMatchRules(subjectId) {
+    const result=await this.db.prepare("SELECT g.rule_id ruleId,g.project_id projectId,p.name projectName,g.enabled,g.center_lat centerLatitude,g.center_lng centerLongitude,g.radius_m radiusMeters,g.priority,g.version ruleVersion,g.updated_at updatedAt FROM work_log_project_geofences g JOIN projects p ON p.subject_id=g.subject_id AND p.project_id=g.project_id WHERE g.subject_id=? AND g.enabled=1 AND p.status='ACTIVE' ORDER BY g.priority DESC,g.radius_m ASC,g.rule_id LIMIT 100").bind(subjectId).all();
+    return (result.results||[]).map(row=>({...row,enabled:Boolean(row.enabled)}));
+  }
+  async getProjectGeofence(subjectId,projectId){const row=await this.first("SELECT g.*,p.name project_name,p.status project_status FROM work_log_project_geofences g JOIN projects p ON p.subject_id=g.subject_id AND p.project_id=g.project_id WHERE g.subject_id=? AND g.project_id=?",subjectId,projectId);return row?{ruleId:row.rule_id,projectId:row.project_id,projectName:row.project_name,projectStatus:row.project_status,enabled:Boolean(row.enabled),centerLatitude:row.center_lat,centerLongitude:row.center_lng,radiusMeters:row.radius_m,priority:row.priority,ruleVersion:row.version,createdAt:row.created_at,updatedAt:row.updated_at}:null}
+  async upsertProjectGeofence(subjectId,projectId,input){const project=await this.getProject(subjectId,projectId);if(!project)throw new WorkLogError("PROJECT_NOT_FOUND",404);const current=await this.getProjectGeofence(subjectId,projectId),values=validateProjectGeofenceInput(input,{partial:Boolean(current)}),now=this.now();if(current){if(values.ifVersion!==current.ruleVersion)throw new WorkLogError("PROJECT_GEOFENCE_VERSION_CONFLICT",409);const result=await this.db.prepare("UPDATE work_log_project_geofences SET enabled=?,center_lat=?,center_lng=?,radius_m=?,priority=?,version=version+1,updated_at=? WHERE subject_id=? AND project_id=? AND version=?").bind((values.enabled??current.enabled)?1:0,values.centerLatitude??current.centerLatitude,values.centerLongitude??current.centerLongitude,values.radiusMeters??current.radiusMeters,values.priority??current.priority,now,subjectId,projectId,current.ruleVersion).run();if(!resultChanges(result))throw new WorkLogError("PROJECT_GEOFENCE_VERSION_CONFLICT",409)}else await this.db.prepare("INSERT INTO work_log_project_geofences(rule_id,subject_id,project_id,enabled,center_lat,center_lng,radius_m,priority,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,1,?,?)").bind(input.ruleId||this.id("geo"),subjectId,projectId,values.enabled?1:0,values.centerLatitude,values.centerLongitude,values.radiusMeters,values.priority,now,now).run();return this.getProjectGeofence(subjectId,projectId)}
   async createTag(subjectId, input) {
     const now = this.now(),
       tagId = input.tagId || this.id("tag"),
@@ -1411,6 +1419,9 @@ export class EdgeOneBlobWorkLogRepository {
       throw new WorkLogError("PROJECT_VERSION_CONFLICT", 409);
     return next;
   }
+  async getProjectGeofence(subjectId,projectId){return (await this.read(this.key("project-geofence",subjectId,projectId)))?.value||null}
+  async listProjectMatchRules(subjectId){const projects=await this.listProjects(subjectId,{status:"ACTIVE"}),rules=(await Promise.all(projects.map(project=>this.getProjectGeofence(subjectId,project.projectId)))).filter(rule=>rule?.enabled).map(rule=>({ruleId:rule.ruleId,projectId:rule.projectId,projectName:projects.find(project=>project.projectId===rule.projectId)?.name||rule.projectName,enabled:true,centerLatitude:rule.centerLatitude,centerLongitude:rule.centerLongitude,radiusMeters:rule.radiusMeters,priority:rule.priority,ruleVersion:rule.ruleVersion,updatedAt:rule.updatedAt}));return rules.sort((a,b)=>b.priority-a.priority||a.radiusMeters-b.radiusMeters||a.ruleId.localeCompare(b.ruleId)).slice(0,100)}
+  async upsertProjectGeofence(subjectId,projectId,input){const project=await this.getProject(subjectId,projectId);if(!project)throw new WorkLogError("PROJECT_NOT_FOUND",404);const key=this.key("project-geofence",subjectId,projectId),current=await this.read(key),values=validateProjectGeofenceInput(input,{partial:Boolean(current)}),now=this.now();if(current&&values.ifVersion!==current.value.ruleVersion)throw new WorkLogError("PROJECT_GEOFENCE_VERSION_CONFLICT",409);const next=current?{...current.value,enabled:values.enabled??current.value.enabled,centerLatitude:values.centerLatitude??current.value.centerLatitude,centerLongitude:values.centerLongitude??current.value.centerLongitude,radiusMeters:values.radiusMeters??current.value.radiusMeters,priority:values.priority??current.value.priority,projectName:project.name,ruleVersion:current.value.ruleVersion+1,updatedAt:now}:{schemaVersion:1,ruleId:input.ruleId||`geo_${this.random()}`,subjectId,projectId,projectName:project.name,enabled:values.enabled,centerLatitude:values.centerLatitude,centerLongitude:values.centerLongitude,radiusMeters:values.radiusMeters,priority:values.priority,ruleVersion:1,createdAt:now,updatedAt:now};const ok=current?await this.cas(key,next,current.etag):await this.createOnly(key,next);if(!ok)throw new WorkLogError("PROJECT_GEOFENCE_VERSION_CONFLICT",409);return next}
   async createTag(subjectId, input) {
     const tagId = input.tagId || `tag_${this.random()}`,
       name = String(input.name || "").trim(),

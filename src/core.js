@@ -627,7 +627,7 @@ export async function handleRequest(request, env, kv) {
   const headers = corsHeaders(request, env);
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers });
-  if (/^\/v1\/(?:captures|work-logs|projects|tags|exports)(?:\/|$)/.test(url.pathname)) {
+  if (/^\/v1\/(?:captures|work-logs|projects|project-match-rules|tags|exports)(?:\/|$)/.test(url.pathname)) {
     const repository = env.PROVENANCE_D1 ? new D1WorkLogRepository(env.PROVENANCE_D1) : env.PROVENANCE_BLOB ? new EdgeOneBlobWorkLogRepository(env.PROVENANCE_BLOB) : null;
     const edgeExportStore = env.PROVENANCE_BLOB ? new EdgeOneExportStore(env.PROVENANCE_BLOB) : null;
     const exportJobs = env.PROVENANCE_D1 ? new D1ExportRepository(env.PROVENANCE_D1) : edgeExportStore;

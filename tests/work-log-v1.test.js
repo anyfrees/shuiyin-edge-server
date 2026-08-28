@@ -265,6 +265,10 @@ test("EdgeOne capture association, project and tag ownership", async () => {
   );
   const project = await repo.createProject(subject, { name: "工地 A" });
   assert.equal(await repo.getProject(subjectB, project.projectId), null);
+  const geofence=await repo.upsertProjectGeofence(subject,project.projectId,{enabled:true,centerLatitude:31.8,centerLongitude:117.2,radiusMeters:500,priority:100});
+  assert.equal(geofence.ruleVersion,1);
+  assert.equal((await repo.listProjectMatchRules(subject))[0].projectId,project.projectId);
+  await assert.rejects(repo.upsertProjectGeofence(subject,project.projectId,{ifVersion:9,enabled:false}),error=>error.code==="PROJECT_GEOFENCE_VERSION_CONFLICT");
   const tag = await repo.createTag(subject, { name: "安全" }),
     tagged = await repo.attachTag(subject, log.logId, tag.tagId, 3);
   assert.deepEqual(tagged.tagIds, [tag.tagId]);
@@ -287,6 +291,9 @@ test("D1 migration is additive and contains frozen constraints/indexes", () => {
   ])
     assert.ok(sql.includes(expected), expected);
   assert.equal(/\b(?:DROP|ALTER|RENAME|DELETE FROM)\b/i.test(sql), false);
+  const geofenceSql=fs.readFileSync(path.join(root,"migrations/0009_work_log_project_geofence.sql"),"utf8");
+  for(const expected of ["CREATE TABLE IF NOT EXISTS work_log_project_geofences","UNIQUE(subject_id, project_id)","CREATE TABLE IF NOT EXISTS capture_project_matches","idx_wl_geofence_subject_enabled"])assert.ok(geofenceSql.includes(expected),expected);
+  assert.equal(/\b(?:DROP|ALTER|RENAME|DELETE FROM)\b/i.test(geofenceSql),false);
 });
 test("D1 repository executes ownership, idempotency, association and concurrency vectors", async (t) => {
   execFileSync(
@@ -366,6 +373,11 @@ test("D1 repository executes ownership, idempotency, association and concurrency
     (await call("getProject", subjectB, project.result.project_id)).result,
     null,
   );
+  const geofence=await call("upsertProjectGeofence",runSubject,project.result.project_id,{enabled:true,centerLatitude:31.8,centerLongitude:117.2,radiusMeters:500,priority:100});
+  assert.equal(geofence.result.ruleVersion,1,JSON.stringify(geofence));
+  assert.equal((await call("listProjectMatchRules",runSubject)).result[0].projectId,project.result.project_id);
+  assert.equal((await call("listProjectMatchRules",subjectB)).result.length,0);
+  assert.equal((await call("upsertProjectGeofence",runSubject,project.result.project_id,{ifVersion:99,enabled:false})).code,"PROJECT_GEOFENCE_VERSION_CONFLICT");
   const log = await call("createWorkLog", runSubject, {
       localDate: "2026-08-26",
       title: "日报",

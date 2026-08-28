@@ -520,6 +520,10 @@ export class WorkLogHttpService {
         );
         return json(null, 204);
       }
+      if (path === "/v1/project-match-rules" && method === "GET") {
+        const { subjectId } = await this.auth(request);
+        return json({ ok: true, schemaVersion: 1, items: await this.repository.listProjectMatchRules(subjectId) });
+      }
       if (path === "/v1/projects" && method === "GET") {
         const { subjectId } = await this.auth(request);
         return json({
