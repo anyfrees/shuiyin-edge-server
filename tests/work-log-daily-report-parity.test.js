@@ -40,3 +40,18 @@ test("SENTENCE-BOUNDARY-PARITY SQLite D1 and EdgeOne keep the production descrip
   assert.match(sqlite,/大屏不显示，电源未开。/);
   assert.doesNotMatch(sqlite,/。情况。/);
 });
+
+test("ACTION-RESULT-PARITY SQLite D1 and EdgeOne suppress only redundant completion",()=>{
+  const items=[
+    {firstCaptureAt:"01",facts:facts({actions:["处理"],objects:["网络"],issues:["网络故障"],locations:["实验楼"],descriptions:["网络故障，已处理。"],provenance:[{semanticRole:"DESCRIPTION"}]})},
+    {firstCaptureAt:"02",facts:facts({actions:["保障"],locations:["中和会堂"]})},
+    {firstCaptureAt:"03",facts:facts({actions:["处理"],objects:["大屏"],issues:["大屏故障"],descriptions:["大屏故障，已处理。"],provenance:[{semanticRole:"DESCRIPTION"}]})},
+    {firstCaptureAt:"04",facts:facts({actions:["巡检"],objects:["设备"],locations:["男生宿舍楼"]})},
+    {firstCaptureAt:"05",facts:facts({actions:["修复"],objects:["一卡通"],issues:["一卡通故障"],results:["已修复"],locations:["食堂"]})},
+  ];
+  const providers=[items,structuredClone(items),structuredClone(items)].map((fixture)=>JSON.stringify(realizeStructuredDailyReport(fixture)));
+  assert.equal(providers[1],providers[0]);
+  assert.equal(providers[2],providers[0]);
+  assert.match(providers[0],/食堂一卡通出现故障，现场进行修复。/);
+  assert.doesNotMatch(providers[0],/修复完成后已修复/);
+});
