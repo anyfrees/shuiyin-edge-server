@@ -47,10 +47,14 @@ export const ruleBasedDraft = (capture, count = 1) => {
   };
 };
 
-export const ruleBasedSummary = (categories, count) => {
+export const ruleBasedSummary = (categories, count, projectName = "") => {
   const unique = [...new Set(categories.map((value) => clean(value)).filter(Boolean))];
-  const subjects = unique.length ? unique.join("、") : "现场工作";
-  return `今日记录${subjects}等工作，共形成 ${count} 条现场记录。`;
+  const visible = unique.slice(0, 4);
+  const subjects = visible.length
+    ? `${visible.join("、")}${unique.length > visible.length ? `等 ${unique.length} 项工作` : ""}`
+    : "现场工作";
+  const project = clean(projectName);
+  return `今日${project ? `在“${project}”项目` : ""}记录了${subjects}，共形成 ${count} 条现场记录。`;
 };
 
 export const assertFactSafeSuggestion = (suggestion, sourceFacts) => {
