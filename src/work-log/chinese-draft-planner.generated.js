@@ -10,6 +10,8 @@ const NEGATIVE = ["暂未恢复","仍异常","暂未处理","未处理","待处�
 const GENERIC = new Set(["现场记录","工作记录","水印模板","事项","说明"]);
 const fieldValue = (field) => clean(Array.isArray(field?.value) ? field.value.join("、") : field?.value);
 const provenance = (field, role) => ({ fieldId: clean(field?.fieldId || field?.field_id), captureId: clean(field?.captureId || field?.capture_id), sourceType: "VALUE_CLASSIFICATION", role });
+const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
+export const atomicFactDigest = (facts) => { let hash=0xcbf29ce484222325n;for(const char of canonical({actions:facts.actions,objects:facts.objects,issues:facts.issues,results:facts.results,negativeStatuses:facts.negativeStatuses,locations:facts.locations,quantities:facts.quantities,purposes:facts.purposes,descriptions:facts.descriptions})){hash^=BigInt(char.codePointAt(0));hash=BigInt.asUintN(64,hash*0x100000001b3n)}return`facts-v1-${hash.toString(16).padStart(16,"0")}`};
 
 export const normalizeAtomicWorkFacts = (source = {}) => {
   if (source.atomicFacts) return source.atomicFacts;
@@ -94,7 +96,7 @@ export const planWorkLogSummary = (items = []) => {
 export const semanticDraftForCaptures = (captures = []) => {
   const first = captures[0] || {}, category = sourceCategory(first), atomicFacts = aggregateAtomicWorkFacts(captures.map((capture) => ({ ...capture, category: sourceCategory(capture) })));
   const item = planWorkLogItem({ category, atomicFacts });
-  return { logTitle:`${first.localDate||first.local_date} 工作记录`, summary:`今日${clause(item)}。`, category, itemTitle:item.title, content:item.content, result:item.facts.results[0]||"", note:"", plannerVersion:item.plannerVersion, origin:item.origin, atomicFacts:item.facts };
+  return { logTitle:`${first.localDate||first.local_date} 工作记录`, summary:`今日${clause(item)}。`, category, itemTitle:item.title, content:item.content, result:item.facts.results[0]||"", note:"", plannerVersion:item.plannerVersion, origin:item.origin, factDigest:atomicFactDigest(item.facts), atomicFacts:item.facts };
 };
 export const semanticRuleBasedDraft = (capture) => semanticDraftForCaptures([capture]);
 const sourceCategory = (capture) => {for(const field of capture.fields||[]){const label=clean(field?.labelSnapshot||field?.label_snapshot),value=fieldValue(field);if(/^(?:事项|工作事项|类别|类型|说明|备注|问题原因|活动主题)$/.test(label)&&value&&!GENERIC.has(value))return value;}return clean(capture.category || capture.template?.nameSnapshot || capture.template_name_snapshot || "现场记录");};
