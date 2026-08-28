@@ -291,7 +291,7 @@ export class D1AutoDraftAdapter {
         if (!log) {
           await this.db
             .prepare(
-              "INSERT OR IGNORE INTO work_logs(log_id,subject_id,local_date,timezone,title,summary,project_id,project_name_snapshot,status,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'DRAFT',1,?,?)",
+              "INSERT OR IGNORE INTO work_logs(log_id,subject_id,local_date,timezone,title,summary,project_id,project_name_snapshot,status,version,created_at,updated_at) VALUES(?,?,?,?,?,?,NULL,NULL,'DRAFT',1,?,?)",
             )
             .bind(
               claim.log_id,
@@ -300,10 +300,6 @@ export class D1AutoDraftAdapter {
               row.timezone || capture.capture?.timezone || null,
               text.logTitle,
               text.summary,
-              row.project_id || capture.project?.projectId || null,
-              row.project_name_snapshot ||
-                capture.project?.projectNameSnapshot ||
-                null,
               now,
               now,
             )
@@ -653,8 +649,8 @@ export class EdgeOneAutoDraftAdapter {
           timezone: capture.capture?.timezone,
           title: this.draft(capture, 1).logTitle,
           summary: this.draft(capture, 1).summary,
-          projectId: capture.project?.projectId,
-          projectNameSnapshot: capture.project?.projectNameSnapshot,
+          projectId: null,
+          projectNameSnapshot: null,
         });
       await this.repo.mutateAggregate(
         subjectId,

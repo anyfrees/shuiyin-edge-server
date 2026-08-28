@@ -1,3 +1,5 @@
+import { realizeStructuredDailyReport } from "./daily-report-realizer.js";
+
 export const WORK_LOG_CHINESE_PLANNER_VERSION = "WORK_LOG_CHINESE_PLANNER_V1";
 export const semanticDraftEnabled = (env = {}) => String(env.WORK_LOG_SEMANTIC_DRAFT_V1_ENABLED || "").toLowerCase() === "true";
 
@@ -83,14 +85,8 @@ export const planWorkLogItem = (source = {}) => {
 const clause = (plan) => plan.content.replace(/[。！？]$/,"");
 export const planWorkLogSummary = (items = []) => {
   const plans=items.map((item,index)=>({...planWorkLogItem(item),index,firstCaptureAt:item.firstCaptureAt||item.first_capture_at||""})).sort((a,b)=>String(a.firstCaptureAt).localeCompare(String(b.firstCaptureAt))||a.index-b.index);
-  const deduped=[];for(const plan of plans)if(!deduped.some((x)=>clause(x)===clause(plan)))deduped.push(plan);
-  const clauses=deduped.map(clause);let summary;
-  if(!clauses.length)summary="今日记录现场工作情况。";
-  else if(clauses.length===1)summary=`今日${clauses[0]}。`;
-  else if(clauses.length===2)summary=`今日${clauses[0]}，并${clauses[1]}。`;
-  else if(clauses.length===3)summary=`今日${clauses[0]}，${clauses[1]}，并${clauses[2]}。`;
-  else {const split=Math.ceil(clauses.length/2),first=clauses.slice(0,split),second=clauses.slice(split);summary=`今日${first.join("，")}。另${second.slice(0,-1).join("，")}${second.length>1?"，同时":""}${second.at(-1)}。`;}
-  return {plannerVersion:WORK_LOG_CHINESE_PLANNER_VERSION,origin:"RULE_GENERATED",summary,items:deduped};
+  const report=realizeStructuredDailyReport(plans.map((plan)=>({...plan,facts:plan.facts,factDigest:atomicFactDigest(plan.facts)})));
+  return {plannerVersion:WORK_LOG_CHINESE_PLANNER_VERSION,origin:"RULE_GENERATED",generatorVersion:report.generatorVersion,summary:report.summary,entries:report.entries,items:plans};
 };
 
 export const semanticDraftForCaptures = (captures = []) => {

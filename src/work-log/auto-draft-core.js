@@ -19,14 +19,14 @@ export const captureCategory = (capture) =>
   fieldCategory(capture) || clean(capture.template?.nameSnapshot || capture.template_name_snapshot, "现场记录").slice(0, 100);
 
 export const workLogGroupingKey = (capture) => {
-  const project = clean(capture.project?.projectId || capture.project_id, "none");
-  return [capture.subjectId || capture.subject_id, capture.localDate || capture.local_date, project].join("|");
+  return [capture.subjectId || capture.subject_id, capture.localDate || capture.local_date].join("|");
 };
 
 export const itemGroupingKey = (capture) => {
   const log = workLogGroupingKey(capture);
+  const project = clean(capture.project?.projectId || capture.project_id, "none");
   const template = clean(capture.template?.templateId || capture.template_id, "none");
-  return [log, captureCategory(capture), template].join("|");
+  return [log, project, captureCategory(capture), template].join("|");
 };
 
 export const captureGroupingKey = itemGroupingKey;
