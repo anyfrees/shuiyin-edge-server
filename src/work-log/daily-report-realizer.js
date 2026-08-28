@@ -2,7 +2,35 @@ export const WORK_LOG_DAILY_REPORT_REALIZER_VERSION = "WORK_LOG_DAILY_REPORT_REA
 
 const clean = (value) => String(value ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
 const unique = (values) => [...new Set((values || []).map(clean).filter(Boolean))];
-const punctuate = (value) => `${clean(value).replace(/[。！？]+$/u, "")}。`;
+const terminalPunctuation = /[。！？；.!?;]+$/u;
+const punctuate = (value) => {
+  const text = clean(value), terminal = text.match(terminalPunctuation)?.[0] || "";
+  const mark = /[!！]/u.test(terminal) ? "！" : /[?？]/u.test(terminal) ? "？" : "。";
+  return `${text.replace(terminalPunctuation, "")}${mark}`;
+};
+export const PHRASE_COMPLETENESS = Object.freeze({
+  BARE_PHRASE:"BARE_PHRASE",
+  CLAUSE:"CLAUSE",
+  COMPLETE_DESCRIPTION:"COMPLETE_DESCRIPTION",
+  COMPLETE_SENTENCE:"COMPLETE_SENTENCE",
+});
+const actionLead = /^(?:现场)?(?:完成|开展|检查|巡检|排查|调试|处理|保障|记录|办理|更换|维修|重启|恢复|核对|针对)/u;
+const predicateShape = /(?:不显示|未开|未恢复|仍未|暂未|异常|离线|掉线|断电|断网|黑屏|中断|损坏|松动|故障|恢复|进行(?:检查|巡检|排查|调试|处理|保障|更换|维修|重启)|已(?:完成|恢复|解决|处理))/u;
+const semanticRoleOf = (source, facts) => clean(source.semanticRole || source.semantic_role ||
+  (facts?.provenance || []).map((entry) => clean(entry?.semanticRole || entry?.semantic_role || entry?.role)).find(Boolean)).toUpperCase();
+
+export const classifyPhraseCompleteness = ({ text, semanticRole = "", source = "" } = {}) => {
+  const value = clean(text), role = clean(semanticRole).toUpperCase(), origin = clean(source).toUpperCase();
+  const body = value.replace(terminalPunctuation, ""), hasTerminal = terminalPunctuation.test(value);
+  const clauses = body.split(/[，,；;]/u).map(clean).filter(Boolean);
+  const isDescription = role === "DESCRIPTION" || origin === "DESCRIPTION";
+  if (!value || role === "ISSUE") return PHRASE_COMPLETENESS.BARE_PHRASE;
+  const completeShape = actionLead.test(body) || /进行(?:检查|巡检|排查|调试|处理|保障|更换|维修|重启)/u.test(body) ||
+    (clauses.length >= 2 && clauses.every((part) => predicateShape.test(part)));
+  if (isDescription && completeShape) return hasTerminal ? PHRASE_COMPLETENESS.COMPLETE_SENTENCE : PHRASE_COMPLETENESS.COMPLETE_DESCRIPTION;
+  if (predicateShape.test(body) && !/(?:情况|工作|业务)$/u.test(body)) return PHRASE_COMPLETENESS.CLAUSE;
+  return PHRASE_COMPLETENESS.BARE_PHRASE;
+};
 const locationsText = (values, max = 4) => {
   const locations = unique(values);
   return locations.length > max ? `${locations.slice(0, max).join("、")}等区域` : locations.join("、");
@@ -18,10 +46,17 @@ const issuePhrase = (object, issue) => {
   if (core === "异常") return `${objectText(object)}出现异常`;
   return `${objectText(object)}${core}`;
 };
-const completeNaturalDescription = (facts) => unique(facts.descriptions).find((value) =>
-  value.length >= 10 && /[。！？]$/u.test(value) &&
-  unique(facts.actions).some((action) => value.includes(action)) &&
-  !value.includes("确保"));
+const naturalDescription = (source, facts) => {
+  const explicitRole = semanticRoleOf(source, facts);
+  for (const value of unique(facts.descriptions)) {
+    if (value.includes("确保")) continue;
+    const semanticRole = explicitRole || (unique(facts.actions).some((action) => value.includes(action)) ? "DESCRIPTION" : "");
+    const phraseType = classifyPhraseCompleteness({text:value, semanticRole, source:semanticRole});
+    if (phraseType === PHRASE_COMPLETENESS.COMPLETE_DESCRIPTION || phraseType === PHRASE_COMPLETENESS.COMPLETE_SENTENCE)
+      return {value, phraseType, semanticRole};
+  }
+  return null;
+};
 
 export const realizeDailyReportEntry = (source = {}) => {
   const facts = source.facts || source.atomicFacts || source;
@@ -30,10 +65,10 @@ export const realizeDailyReportEntry = (source = {}) => {
   const purposes = unique(facts.purposes), quantities = unique(facts.quantities);
   const location = locationsText(facts.locations), object = objectText(objects[0]);
   const action = actions[0], issue = issues[0], result = results[0], negative = negatives[0];
-  const purpose = purposes[0], quantity = quantities[0], natural = completeNaturalDescription(facts);
-  let text;
+  const purpose = purposes[0], quantity = quantities[0], natural = naturalDescription(source, facts);
+  let text, wrapperApplied = false;
 
-  if (natural) text = location && !natural.includes(location) ? `${location}${natural}` : natural;
+  if (natural) text = natural.value;
   else if (action === "办理") text = `办理${object || clean(source.category)}`;
   else if (action === "盘点") {
     const target = `${location}${object}${quantity || ""}` || clean(source.category);
@@ -60,7 +95,9 @@ export const realizeDailyReportEntry = (source = {}) => {
     if (purpose) text += `，${purpose}`;
   } else {
     const description = unique(facts.descriptions)[0] || clean(source.category) || "现场工作情况";
-    text = /(?:情况|工作|业务)$/u.test(description) ? `记录${description}` : `记录${description}情况`;
+    const descriptionBody = description.replace(terminalPunctuation, "");
+    text = /(?:情况|工作|业务)$/u.test(descriptionBody) ? `记录${descriptionBody}` : `记录${descriptionBody}情况`;
+    wrapperApplied = true;
   }
 
   if (result && !text.includes(result)) {
@@ -74,6 +111,9 @@ export const realizeDailyReportEntry = (source = {}) => {
     text: punctuate(text),
     factDigest: clean(source.factDigest),
     generatorVersion: WORK_LOG_DAILY_REPORT_REALIZER_VERSION,
+    phraseType:natural?.phraseType || classifyPhraseCompleteness({text:unique(facts.descriptions)[0],semanticRole:semanticRoleOf(source,facts)}),
+    semanticRole:natural?.semanticRole || semanticRoleOf(source,facts),
+    wrapperApplied,
   };
 };
 
