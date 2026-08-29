@@ -6,10 +6,12 @@ import {
   validateCaptureSnapshot,
 } from "./core.js";
 import { validateProjectGeofenceInput } from "./project-geofence-core.js";
+import { composeEligibleDailySummary } from "./manual-item-presentation.generated.js";
 const json = (value) => JSON.stringify(value ?? null),
   parse = (value) => (value == null ? null : JSON.parse(value));
 const resultChanges = (result) =>
   Number(result?.meta?.changes ?? result?.changes ?? 0);
+const resultRows=result=>Array.isArray(result?.results)?result.results:Array.isArray(result?.result)?result.result:[];
 const row = (value) => {
   if (Array.isArray(value?.results)) return value.results[0] || null;
   if (Array.isArray(value?.result)) return value.result[0] || null;
@@ -365,7 +367,8 @@ export class D1WorkLogRepository {
   restoreWorkLog(s, l, v) {
     return this.transition(s, l, "DRAFT", v);
   }
-  async createItem(subjectId, logId, input) {
+  async refreshDailySummary(subjectId,logId){const log=await this.first("SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",subjectId,logId);if(!log||log.status!=="DRAFT")return log;const meta=await this.first("SELECT user_edited_summary FROM work_log_auto_metadata WHERE subject_id=? AND log_id=?",subjectId,logId).catch(()=>null);if(meta?.user_edited_summary)return log;const itemResult=await this.db.prepare(`SELECT i.*,m.item_id auto_item_id,m.generated_fields_json,m.user_edited_fields_json FROM work_log_items i LEFT JOIN work_log_auto_item_metadata m ON m.subject_id=i.subject_id AND m.item_id=i.item_id WHERE i.subject_id=? AND i.log_id=? AND i.deleted_at IS NULL ORDER BY i.sort_order,i.created_at,i.item_id`).bind(subjectId,logId).all(),rows=resultRows(itemResult),captureResult=await this.db.prepare(`SELECT ic.item_id,c.* FROM work_log_item_captures ic JOIN capture_events c ON c.subject_id=ic.subject_id AND c.capture_id=ic.capture_id WHERE ic.subject_id=? AND ic.item_id IN (SELECT item_id FROM work_log_items WHERE subject_id=? AND log_id=?) ORDER BY ic.item_id,ic.sort_order,c.created_at,c.capture_id`).bind(subjectId,subjectId,logId).all(),byItem=new Map();for(const capture of resultRows(captureResult)){const list=byItem.get(capture.item_id)||[];list.push({...capture,fields:JSON.parse(capture.fields_json||"[]"),location:JSON.parse(capture.location_json||"{}"),project:{projectId:capture.project_id,projectNameSnapshot:capture.project_name_snapshot},template:{templateId:capture.template_id,nameSnapshot:capture.template_name_snapshot}});byItem.set(capture.item_id,list)}for(const item of rows)item.captures=byItem.get(item.item_id)||[];const summary=composeEligibleDailySummary(rows),now=this.now();if(summary!==log.summary){await this.db.prepare("UPDATE work_logs SET summary=?,updated_at=? WHERE subject_id=? AND log_id=? AND status='DRAFT' AND summary<>?").bind(summary,now,subjectId,logId,summary).run();if(meta)await this.db.prepare("UPDATE work_log_auto_metadata SET generated_summary=?,updated_at=? WHERE subject_id=? AND log_id=?").bind(summary,now,subjectId,logId).run()}return this.first("SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",subjectId,logId)}
+  async createItem(subjectId, logId, input, expectedVersion) {
     const log = await this.first(
       "SELECT * FROM work_logs WHERE subject_id=? AND log_id=?",
       subjectId,
@@ -373,8 +376,10 @@ export class D1WorkLogRepository {
     );
     if (!log) throw new WorkLogError("WORK_LOG_NOT_FOUND", 404);
     if (log.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
+    if(Number.isInteger(expectedVersion)&&log.version!==expectedVersion)throw new WorkLogError("WORK_LOG_VERSION_CONFLICT",409);
     const now = this.now(),
       itemId = input.itemId || this.id("item");
+    const prior=await this.first("SELECT * FROM work_log_items WHERE subject_id=? AND item_id=?",subjectId,itemId);if(prior){const same=prior.log_id===logId&&["category","title","content","result","note"].every(key=>String(prior[key]||"")===String(input[key]||""));if(same)return prior;throw new WorkLogError("WORK_LOG_ITEM_IDEMPOTENCY_CONFLICT",409)}
     await this.db
       .prepare(
         "INSERT INTO work_log_items(item_id,subject_id,log_id,category,title,content,result,note,start_at,end_at,sort_order,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)",
@@ -395,11 +400,12 @@ export class D1WorkLogRepository {
         now,
       )
       .run();
-    return this.first(
+    const created=await this.first(
       "SELECT * FROM work_log_items WHERE subject_id=? AND item_id=?",
       subjectId,
       itemId,
     );
+    await this.refreshDailySummary(subjectId,logId);return created;
   }
   async updateItem(subjectId, logId, itemId, input, expectedVersion) {
     const item = await this.first(
@@ -417,19 +423,13 @@ export class D1WorkLogRepository {
     if (log.status !== "DRAFT") throw new WorkLogError("WORK_LOG_FINAL", 409);
     if (Number.isInteger(expectedVersion) && log.version !== expectedVersion)
       throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
+    const next={category:input.category??item.category,title:input.title??item.title,content:input.content??item.content,result:input.result??item.result,note:input.note??item.note,start_at:input.startAt??item.start_at,end_at:input.endAt??item.end_at,sort_order:input.sortOrder??item.sort_order};if(next.category===item.category&&next.title===item.title&&next.content===item.content&&next.result===item.result&&next.note===item.note&&next.start_at===item.start_at&&next.end_at===item.end_at&&next.sort_order===item.sort_order)return item;
     await this.db
       .prepare(
         "UPDATE work_log_items SET category=?,title=?,content=?,result=?,note=?,start_at=?,end_at=?,sort_order=?,version=version+1,updated_at=? WHERE subject_id=? AND log_id=? AND item_id=?",
       )
       .bind(
-        input.category ?? item.category,
-        input.title ?? item.title,
-        input.content ?? item.content,
-        input.result ?? item.result,
-        input.note ?? item.note,
-        input.startAt ?? item.start_at,
-        input.endAt ?? item.end_at,
-        input.sortOrder ?? item.sort_order,
+        next.category,next.title,next.content,next.result,next.note,next.start_at,next.end_at,next.sort_order,
         this.now(),
         subjectId,
         logId,
@@ -438,11 +438,12 @@ export class D1WorkLogRepository {
       .run();
     const changed=["category","title","content","result","note","startAt","endAt","sortOrder"].filter(key=>input[key]!==undefined),meta=changed.length&&await this.first("SELECT user_edited_fields_json FROM work_log_auto_item_metadata WHERE subject_id=? AND item_id=?",subjectId,itemId).catch(()=>null);
     if(meta)await this.db.prepare("UPDATE work_log_auto_item_metadata SET user_edited_fields_json=?,updated_at=? WHERE subject_id=? AND item_id=?").bind(JSON.stringify([...new Set([...JSON.parse(meta.user_edited_fields_json||"[]"),...changed])]),this.now(),subjectId,itemId).run();
-    return this.first(
+    const updated=await this.first(
       "SELECT * FROM work_log_items WHERE subject_id=? AND item_id=?",
       subjectId,
       itemId,
     );
+    await this.refreshDailySummary(subjectId,logId);return updated;
   }
   async deleteItem(subjectId, logId, itemId, expectedVersion) {
     const item = await this.first(
@@ -472,6 +473,7 @@ export class D1WorkLogRepository {
         )
         .bind(this.now(), this.now(), subjectId, itemId),
     ]);
+    await this.refreshDailySummary(subjectId,logId);
     return true;
   }
   async attachCapture(
@@ -1029,7 +1031,9 @@ export class EdgeOneBlobWorkLogRepository {
       if (!head && !create) throw new WorkLogError("WORK_LOG_NOT_FOUND", 404);
       const prior = head ? await this.read(head.value.objectKey) : null,
         current = prior?.value || null,
-        next = mutator(current),
+        next = mutator(current);
+      if(next===current)return current;
+      const
         version = (head?.value?.version || 0) + 1,
         objectKey = this.key("log", subjectId, logId, `v${version}`);
       await this.createOnly(objectKey, { ...next, subjectId, logId, version });
@@ -1201,6 +1205,7 @@ export class EdgeOneBlobWorkLogRepository {
         throw new WorkLogError("WORK_LOG_VERSION_CONFLICT", 409);
       if (current.status !== "DRAFT")
         throw new WorkLogError("WORK_LOG_FINAL", 409);
+      const prior=current.items.find(x=>x.itemId===(input.itemId||""));if(prior){const same=["category","title","content","result","note"].every(key=>String(prior[key]||"")===String(input[key]||""));if(same)return current;throw new WorkLogError("WORK_LOG_ITEM_IDEMPOTENCY_CONFLICT",409)}
       const item = {
         itemId: input.itemId || `item_${this.random()}`,
         category: input.category || "",
@@ -1214,9 +1219,9 @@ export class EdgeOneBlobWorkLogRepository {
         createdAt: this.now(),
         updatedAt: this.now(),
       };
-      return {
+      const items=[...current.items,item],summary=(current.userEditedSummary||current.autoDraft?.userEditedSummary)?current.summary:composeEligibleDailySummary(items);return {
         ...current,
-        items: [...current.items, item],
+        items,summary,
         updatedAt: this.now(),
       };
     });
@@ -1231,7 +1236,7 @@ export class EdgeOneBlobWorkLogRepository {
       if (index < 0) throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
       const items = [...current.items],
         old = items[index];
-      items[index] = {
+      const nextItem = {
         ...old,
         category: input.category ?? old.category,
         title: input.title ?? old.title,
@@ -1246,7 +1251,7 @@ export class EdgeOneBlobWorkLogRepository {
           ? [...new Set([...(old.userEditedFields || []), ...["category","title","content","result","note","startAt","endAt","sortOrder"].filter((key) => input[key] !== undefined)])]
           : old.userEditedFields,
       };
-      return { ...current, items, updatedAt: this.now() };
+      if(JSON.stringify(nextItem)===JSON.stringify({...old,updatedAt:nextItem.updatedAt}))return current;items[index]=nextItem;return { ...current, items,summary:(current.userEditedSummary||current.autoDraft?.userEditedSummary)?current.summary:composeEligibleDailySummary(items), updatedAt: this.now() };
     });
   }
   deleteItem(subjectId, logId, itemId, expectedVersion) {
@@ -1257,9 +1262,9 @@ export class EdgeOneBlobWorkLogRepository {
         throw new WorkLogError("WORK_LOG_FINAL", 409);
       if (!current.items.some((x) => x.itemId === itemId))
         throw new WorkLogError("WORK_LOG_ITEM_NOT_FOUND", 404);
-      return {
+      const items=current.items.filter((x) => x.itemId !== itemId);return {
         ...current,
-        items: current.items.filter((x) => x.itemId !== itemId),
+        items,summary:(current.userEditedSummary||current.autoDraft?.userEditedSummary)?current.summary:composeEligibleDailySummary(items),
         captureAssociations: current.captureAssociations.filter(
           (x) => x.itemId !== itemId,
         ),

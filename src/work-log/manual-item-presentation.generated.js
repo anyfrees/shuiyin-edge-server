@@ -1,0 +1,6 @@
+import { rebuildWorkLogFacts } from "./fact-rebuilder.generated.js";
+const terminal=/[。！？；]$/u,clean=value=>String(value??"").normalize("NFC").trim().replace(/\s+/gu," ");
+export const manualItemText=item=>{const value=clean(item.content||item.title||item.result||item.note);return value&&!terminal.test(value)?`${value}。`:value};
+export const isManualItem=item=>!(item.auto_item_id||item.autoItemId||item.autoManaged);
+const numberedText=summary=>String(summary||"").split(/\r?\n/u).map(line=>line.match(/^\d+、\s*(.+)$/u)?.[1]||"").filter(Boolean);
+export const composeEligibleDailySummary=items=>{const ordered=[...items].sort((a,b)=>Number(a.sort_order??a.sortOrder??0)-Number(b.sort_order??b.sortOrder??0)||Number(a.created_at??a.createdAt??0)-Number(b.created_at??b.createdAt??0)||String(a.item_id??a.itemId??"").localeCompare(String(b.item_id??b.itemId??"")));if(!ordered.some(isManualItem))return rebuildWorkLogFacts(ordered).summary;const auto=ordered.filter(item=>!isManualItem(item)),autoTexts=numberedText(auto.length?rebuildWorkLogFacts(auto).summary:"");let autoIndex=0;const entries=ordered.map(item=>isManualItem(item)?manualItemText(item):autoTexts[autoIndex++]).filter(Boolean);return entries.map((text,index)=>`${index+1}、${text}`).join("\n")};

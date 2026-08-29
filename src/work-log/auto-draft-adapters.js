@@ -6,6 +6,7 @@ import {
 } from "./auto-draft-core.js";
 import { semanticRuleBasedDraft } from "./chinese-draft-planner.generated.js";
 import { rebuildWorkLogFacts } from "./fact-rebuilder.generated.js";
+import { composeEligibleDailySummary } from "./manual-item-presentation.generated.js";
 
 const captureView = (row) =>
   row.snapshot
@@ -157,7 +158,7 @@ export class D1AutoDraftAdapter {
       byItem.set(row.item_id, list);
     }
     for (const item of items) item.captures = byItem.get(item.item_id) || [];
-    const rebuilt = rebuildWorkLogFacts(items);
+    const rebuilt = rebuildWorkLogFacts(items),summary=composeEligibleDailySummary(items);
     for (let index = 0; index < items.length; index++) {
       const row = items[index];
       if (!row.auto_item_id) continue;
@@ -206,11 +207,11 @@ export class D1AutoDraftAdapter {
         "UPDATE work_logs SET summary=?,version=version+1,updated_at=? WHERE subject_id=? AND log_id=? AND status='DRAFT' AND summary<>? AND (SELECT user_edited_summary FROM work_log_auto_metadata WHERE subject_id=? AND log_id=?)=0",
       )
       .bind(
-        rebuilt.summary,
+        summary,
         now,
         subjectId,
         logId,
-        rebuilt.summary,
+        summary,
         subjectId,
         logId,
       )
@@ -219,9 +220,9 @@ export class D1AutoDraftAdapter {
       .prepare(
         "UPDATE work_log_auto_metadata SET generated_summary=?,updated_at=? WHERE subject_id=? AND log_id=? AND generated_summary<>?",
       )
-      .bind(rebuilt.summary, now, subjectId, logId, rebuilt.summary)
+      .bind(summary, now, subjectId, logId, summary)
       .run();
-    return rebuilt;
+    return {...rebuilt,summary};
   }
   async process(subjectId, captureId, options = {}) {
     const { simulateUnknown = false, failAfterDraft = false } = options || {},
@@ -842,7 +843,7 @@ export class EdgeOneAutoDraftAdapter {
                 )
                   currentItem.updatedAt = semanticItems[index].updatedAt;
               });
-              summary = rebuilt.summary;
+              summary = composeEligibleDailySummary(semanticItems);
             } else
               summary = ruleBasedSummary(
                 items.map((x) => x.category),
