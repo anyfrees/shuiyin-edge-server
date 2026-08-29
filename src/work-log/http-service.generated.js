@@ -165,7 +165,7 @@ export class WorkLogHttpService {
       if (path === "/v1/work-logs/weekly/generate" && method === "POST") {
         if(!this.weeklyEnabled||!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
         const {subjectId}=await this.auth(request);if(!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1")))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
-        const body=await this.body(request);return json({ok:true,...await this.weeklyRepository.generate(subjectId,body.weekStart,body.weekEnd)},201);
+        const body=await this.body(request);return json({ok:true,...await this.weeklyRepository.generate(subjectId,body.weekStart,body.weekEnd,{overwriteUserEdited:body.confirmOverwrite===true,version:body.version})},201);
       }
       const weeklyMatch=path.match(/^\/v1\/work-logs\/weekly\/([^/]+)$/);
       if(weeklyMatch&&(method==="GET"||method==="PATCH")){
