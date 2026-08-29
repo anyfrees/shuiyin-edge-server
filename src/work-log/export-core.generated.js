@@ -128,6 +128,13 @@ export const safeSpreadsheetText = (value) => {
   const result = text(value);
   return /^[\s]*[=+\-@\t\r]/.test(result) ? `'${result}` : result;
 };
+export const spreadsheetDateTime = (input) => {
+  if (input == null || input === "") return "—";
+  const date = new Date(typeof input === "string" && /^\d+$/.test(input) ? Number(input) : input);
+  if (Number.isNaN(date.getTime())) return text(input);
+  const parts=new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(date),get=type=>parts.find(x=>x.type===type)?.value||"";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+};
 const xml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 const col = (index) => { let out = ""; for (let n = index + 1; n; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(65 + (n - 1) % 26) + out; return out; };
 const worksheet = (sheet) => { const rows=sheet.rows,widths=sheet.widths||[]; return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols>${(rows[0] || []).map((_, i) => `<col min="${i + 1}" max="${i + 1}" width="${widths[i]||20}" customWidth="1"/>`).join("")}</cols><sheetData>${rows.map((row, ri) => `<row r="${ri + 1}"${ri&&row.some((x)=>String(x||"").includes("\n"))?' ht="72" customHeight="1"':''}>${row.map((value, ci) => `<c r="${col(ci)}${ri + 1}" t="inlineStr" s="${ri===0?1:2}"><is><t xml:space="preserve">${xml(safeSpreadsheetText(value))}</t></is></c>`).join("")}</row>`).join("")}</sheetData><autoFilter ref="A1:${col(Math.max(0, (rows[0]?.length || 1) - 1))}${Math.max(1, rows.length)}"/></worksheet>`; };
@@ -139,7 +146,7 @@ const zip = (files) => { const enc = new TextEncoder(), locals = [], centers = [
 const value = (x) => text(x);
 export const exportWorkbookRows = (model) => {
   const readable=readableExport(model), daily=[["日期","工作记录","项目","状态","记录类型","最后更新时间"]],details=[["日期","序号","工作事项","项目","地点","事项类型","状态","首次记录时间","最后记录时间"]];
-  for(const log of readable.workLogs){daily.push([log.localDate,log.summary,log.projects.join("、")||"—",log.status==="FINAL"?"已完成":log.status==="ARCHIVED"?"已归档":"草稿",log.recordType==="SUPPLEMENTAL"?"补充记录":"当日日报",log.updatedAt]);for(const item of log.items)details.push([log.localDate,item.order,item.dailyReportEntry,item.projects.join("、")||"—",item.locations.join("、")||"—",item.category||item.title,log.status==="FINAL"?"已完成":log.status==="ARCHIVED"?"已归档":"草稿",item.startAt,item.endAt]);}
+  for(const log of readable.workLogs){daily.push([log.localDate,log.summary,log.projects.join("、")||"—",log.status==="FINAL"?"已完成":log.status==="ARCHIVED"?"已归档":"草稿",log.recordType==="SUPPLEMENTAL"?"补充记录":"当日日报",spreadsheetDateTime(log.updatedAt)]);for(const item of log.items)details.push([log.localDate,item.order,item.dailyReportEntry,item.projects.join("、")||"—",item.locations.join("、")||"—",item.category||item.title,log.status==="FINAL"?"已完成":log.status==="ARCHIVED"?"已归档":"草稿",spreadsheetDateTime(item.startAt),spreadsheetDateTime(item.endAt)]);}
   return [{name:"工作日报",rows:daily,widths:[14,80,24,12,14,22]},{name:"事项明细",rows:details,widths:[14,8,64,24,28,20,12,22,22]}];
 };
 export const renderExportXlsx = (model) => { const sheets = model.__weekly?weeklyExportWorkbookRows(model):exportWorkbookRows(model), workbookSheets = sheets.map((sheet, i) => `<sheet name="${xml(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join(""); return zip([
@@ -150,7 +157,7 @@ export const renderExportXlsx = (model) => { const sheets = model.__weekly?weekl
   ["xl/styles.xml", `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF16794B"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="3"><xf xfId="0" fontId="0" fillId="0" borderId="0"/><xf xfId="0" fontId="1" fillId="2" borderId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf xfId="0" fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs></styleSheet>`],
   ...sheets.map((sheet, i) => [`xl/worksheets/sheet${i + 1}.xml`, worksheet(sheet)]),
 ]); };
-export const weeklyExportWorkbookRows = model => [{name:"周报",rows:[["周期","周报内容","状态","来源天数","来源事项数","最后更新时间"],[`${model.weekStart} 至 ${model.weekEnd}`,model.content,model.status,model.sourceDayCount,model.sourceItemCount,model.updatedAt]],widths:[28,90,14,12,14,24]},{name:"来源事项",rows:[["日期","序号","日报事项","项目","地点","来源类型","日报状态"],...model.sourceItems.map(x=>[x.date,x.order,x.presentation,x.project||"—",x.location||"—",x.sourceType,x.dailyStatus])],widths:[14,8,70,24,28,16,14]}];
+export const weeklyExportWorkbookRows = model => [{name:"周报",rows:[["周期","周报内容","状态","来源天数","来源事项数","最后更新时间"],[`${model.weekStart} 至 ${model.weekEnd}`,model.content,model.status,model.sourceDayCount,model.sourceItemCount,spreadsheetDateTime(model.updatedAt)]],widths:[28,90,14,12,14,24]},{name:"来源事项",rows:[["日期","序号","日报事项","项目","地点","来源类型","日报状态"],...model.sourceItems.map(x=>[x.date,x.order,x.presentation,x.project||"—",x.location||"—",x.sourceType,x.dailyStatus])],widths:[14,8,70,24,28,16,14]}];
 export const renderWeeklyExportXlsx = model => renderExportXlsx({...model,__weekly:true});
 
 export class MemoryExportRepository {
