@@ -1,4 +1,5 @@
 import { payloadDigest, WorkLogError } from "./core.js";
+import { validateWeeklyRange } from "./weekly-report-core.js";
 
 const MAX_BODY = 1024 * 1024;
 const forbidden = new Set([
@@ -64,6 +65,8 @@ export class WorkLogHttpService {
     authorize = null,
     autoDraftService = null,
     aiPolishService = null,
+    weeklyRepository = null,
+    weeklyEnabled = false,
   }) {
     this.repository = repository;
     this.authenticate = authenticate;
@@ -75,6 +78,8 @@ export class WorkLogHttpService {
     this.authorize = authorize || (async () => true);
     this.autoDraftService = autoDraftService;
     this.aiPolishService = aiPolishService;
+    this.weeklyRepository = weeklyRepository;
+    this.weeklyEnabled = weeklyEnabled;
   }
   async body(request) {
     const size = Number(request.headers.get("content-length") || 0);
@@ -141,6 +146,26 @@ export class WorkLogHttpService {
       const url = new URL(request.url),
         path = url.pathname,
         method = request.method;
+      if (path === "/v1/work-logs/weekly" && method === "GET") {
+        if(!this.weeklyEnabled||!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
+        const {subjectId}=await this.auth(request);if(!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1")))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
+        const weekStart=url.searchParams.get("weekStart"),weekEnd=url.searchParams.get("weekEnd");
+        if(weekStart&&weekEnd){const range=validateWeeklyRange(weekStart,weekEnd);return json({ok:true,weeklyReport:await this.weeklyRepository.getByIdentity(subjectId,range.weekStart,range.weekEnd,range.reportType)});}
+        return json({ok:true,items:await this.weeklyRepository.list(subjectId)});
+      }
+      if (path === "/v1/work-logs/weekly/generate" && method === "POST") {
+        if(!this.weeklyEnabled||!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
+        const {subjectId}=await this.auth(request);if(!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1")))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
+        const body=await this.body(request);return json({ok:true,...await this.weeklyRepository.generate(subjectId,body.weekStart,body.weekEnd)},201);
+      }
+      const weeklyMatch=path.match(/^\/v1\/work-logs\/weekly\/([^/]+)$/);
+      if(weeklyMatch&&(method==="GET"||method==="PATCH")){
+        if(!this.weeklyEnabled||!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
+        const {subjectId}=await this.auth(request);if(!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1")))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
+        const reportId=decodeURIComponent(weeklyMatch[1]);
+        if(method==="GET"){const report=await this.weeklyRepository.get(subjectId,reportId);if(!report)throw new WorkLogError("WEEKLY_REPORT_NOT_FOUND",404);return json({ok:true,weeklyReport:report});}
+        return json({ok:true,weeklyReport:await this.weeklyRepository.patch(subjectId,reportId,await this.body(request))});
+      }
       if (path === "/v1/exports" && method === "POST") {
         if (!this.exportEnabled || !this.exportService)
           throw new WorkLogError("EXPORT_DISABLED", 503);
