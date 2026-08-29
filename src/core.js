@@ -637,10 +637,11 @@ export async function handleRequest(request, env, kv) {
     const exportJobs = env.PROVENANCE_D1 ? new D1ExportRepository(env.PROVENANCE_D1) : edgeExportStore;
     const exportArtifacts = env.PROVENANCE_D1 && env.WORK_LOG_EXPORTS ? new R2ArtifactStore(env.WORK_LOG_EXPORTS) : edgeExportStore ? new EdgeOneArtifactStore(edgeExportStore) : null;
     const exportEnabled = workLogEnabled(env) && String(env.WORK_LOG_EXPORT_V1_ENABLED || "").toLowerCase() === "true" && Boolean(exportJobs && exportArtifacts);
-    const exportService = exportJobs && exportArtifacts ? new ExportService({repository,jobs:exportJobs,artifacts:exportArtifacts}) : null;
+    let exportService = null;
     const entitlementRepository=env.PROVENANCE_D1?new D1SubjectEntitlementRepository(env.PROVENANCE_D1):kv?new EdgeOneSubjectEntitlementRepository(kv):null;
     const subjectEntitlements=entitlementRepository?new SubjectEntitlementService(entitlementRepository):null;
     const weeklyRepository=env.PROVENANCE_D1?new D1WeeklyReportRepository(env.PROVENANCE_D1):repository instanceof EdgeOneBlobWorkLogRepository?new EdgeOneWeeklyReportRepository(repository):null;
+    exportService = exportJobs && exportArtifacts ? new ExportService({repository,weeklyRepository,jobs:exportJobs,artifacts:exportArtifacts}) : null;
     const weeklyEnabled=workLogEnabled(env)&&String(env.WORK_LOG_WEEKLY_REPORT_ENABLED||"").toLowerCase()==="true";
     if (!repository && workLogEnabled(env)) return json({ ok: false, code: "WORK_LOG_STORAGE_NOT_CONFIGURED" }, 503, headers);
     const autoDraftService=autoDraftEnabled(env)?(env.PROVENANCE_D1?new D1AutoDraftAdapter(env.PROVENANCE_D1,{semanticDraft:semanticDraftEnabled(env)}):repository instanceof EdgeOneBlobWorkLogRepository?new EdgeOneAutoDraftAdapter(repository,{semanticDraft:semanticDraftEnabled(env)}):null):null;

@@ -146,6 +146,15 @@ export class WorkLogHttpService {
       const url = new URL(request.url),
         path = url.pathname,
         method = request.method;
+      if(path==="/v1/work-logs/history"&&method==="GET"){
+        if(!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
+        const {subjectId}=await this.auth(request),reportType=String(url.searchParams.get("reportType")||"ALL").toUpperCase();
+        if(!["ALL","DAILY","WEEKLY"].includes(reportType))throw new WorkLogError("INVALID_PAYLOAD",400);
+        const startDate=url.searchParams.get("startDate")||"0000-01-01",endDate=url.searchParams.get("endDate")||"9999-12-31",limit=int(url.searchParams.get("limit"),20,1,100);
+        const filters={reportType,startDate,endDate,limit},offset=await this.decodeCursor(url.searchParams.get("cursor"),subjectId,filters),includeWeekly=this.weeklyEnabled&&await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1");
+        const result=await this.weeklyRepository.history(subjectId,{...filters,offset,includeWeekly}),nextOffset=offset+result.items.length;
+        return json({ok:true,items:result.items,total:result.total,nextCursor:nextOffset<result.total?await this.encodeCursor(subjectId,filters,nextOffset):null});
+      }
       if (path === "/v1/work-logs/weekly" && method === "GET") {
         if(!this.weeklyEnabled||!this.weeklyRepository)throw new WorkLogError("WEEKLY_REPORT_DISABLED",503);
         const {subjectId}=await this.auth(request);if(!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1")))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
@@ -170,6 +179,7 @@ export class WorkLogHttpService {
         if (!this.exportEnabled || !this.exportService)
           throw new WorkLogError("EXPORT_DISABLED", 503);
         const { subjectId } = await this.auth(request, false, true), body = await this.body(request);
+        if(String(body.reportType||"DAILY").toUpperCase()==="WEEKLY"&&(!(this.weeklyEnabled)||!(await this.authorize(subjectId,"WORK_LOG_WEEKLY_REPORT_V1"))))throw new WorkLogError("WEEKLY_REPORT_NOT_ENTITLED",403);
         return json({ ok: true, export: await this.exportService.create(subjectId, body) }, 202);
       }
       if (path === "/v1/exports" && method === "GET") {
