@@ -1,7 +1,7 @@
 // @ts-nocheck
-export const WORK_LOG_POLISH_PROMPT_VERSION = "WORK_LOG_POLISH_PROMPT_V3";
+export const WORK_LOG_POLISH_PROMPT_VERSION = "WORK_LOG_POLISH_PROMPT_V8_SOURCE_GOVERNED";
 export const DEFAULT_WORK_LOG_AI_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
-const SYSTEM = `你是中文工作日志编辑器，不是工作事实生成器。只对 SAFE DRAFT 做最小幅度中文润色，只可调整语序、连接词、重复、标点和书面表达。ALLOWED CLAIMS 是全部事实边界；REQUIRED CLAIMS 必须保留；FORBIDDEN CLAIMS 绝对不得出现。不得新增动作、处理、结果、状态、数量、地点或对象。“完成/已完成”只能在明确结果允许时使用。风格应像学校或企事业单位信息化运维人员填写的日报：简洁、客观、自然、专业，不写公文套话。Summary 概括，Item Content 稍具体，二者不完全复制。只返回 JSON。`;
+const SYSTEM = `你是中文工作日志编辑器，不是工作事实生成器。输入已完成来源选择、语义去重和事实验证。只对 SAFE DRAFT 做最小幅度中文润色，只可调整语序、连接词、重复、标点和书面表达。ALLOWED CLAIMS 是全部事实边界；REQUIRED CLAIMS 必须保留；FORBIDDEN CLAIMS 绝对不得出现。不得新增或改变动作、结果、状态、数量、地点、对象、待办和观察状态；待办不得升级为处理中或已完成。语义重复只表达一次。禁止输出“结果为”“工作内容为”“问题原因为”“工作记录”“事项为”“地点为”等字段名。风格应简洁、客观、自然、专业。只返回 JSON。`;
 const privateKey = /(?:photo|image|base64|sha|jilu|capture.?id|subject.?id|public.?id|token|session|path|provenance|verify|latitude|longitude|\blat\b|\blng\b)/i;
 const assertSafe = (value) => { if (Array.isArray(value)) return value.forEach(assertSafe); if (!value || typeof value !== "object") return; for (const [key, child] of Object.entries(value)) { if (privateKey.test(key)) throw Object.assign(new Error("AI_PRIVATE_FIELD_REJECTED"), { code: "AI_PRIVATE_FIELD_REJECTED" }); assertSafe(child); } };
 
