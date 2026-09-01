@@ -104,7 +104,7 @@ export const validateCaptureSnapshot = snapshot => {
 };
 export const transitionAllowed = (from,to) => ({
   DRAFT:new Set(["FINAL","ARCHIVED","DELETED"]),
-  FINAL:new Set(["ARCHIVED","DELETED"]),
+  FINAL:new Set(["DRAFT","ARCHIVED","DELETED"]),
   ARCHIVED:new Set(["DELETED"]),
   DELETED:new Set(["DRAFT"])
 }[from]?.has(to) || false);

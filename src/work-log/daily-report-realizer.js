@@ -1,3 +1,5 @@
+import { assertSemanticFactSafety } from "./semantic-fact-safety.js";
+
 export const WORK_LOG_DAILY_REPORT_REALIZER_VERSION = "WORK_LOG_DAILY_REPORT_REALIZER_V1";
 
 const clean = (value) => String(value ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
@@ -17,6 +19,7 @@ export const PHRASE_COMPLETENESS = Object.freeze({
 export const RESULT_SEMANTIC_CLASS = Object.freeze({
   ACTION_COMPLETION_RESULT:"ACTION_COMPLETION_RESULT",
   STATE_CHANGE_RESULT:"STATE_CHANGE_RESULT",
+  CURRENT_STATE_RESULT:"CURRENT_STATE_RESULT",
   NEGATIVE_RESULT:"NEGATIVE_RESULT",
   INDEPENDENT_RESULT:"INDEPENDENT_RESULT",
   UNKNOWN_RESULT:"UNKNOWN_RESULT",
@@ -33,6 +36,7 @@ export const classifyActionResult = ({action, result} = {}) => {
   const resultActionClass = canonicalActionClass(completion?.[1]);
   let resultClass = RESULT_SEMANTIC_CLASS.UNKNOWN_RESULT;
   if (/(?:暂未|尚未|仍未|未恢复|仍异常|仍存在|待处理|未解决)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.NEGATIVE_RESULT;
+  else if (/(?:目前|当前|暂时).*(?:正常|可用|稳定)|目前测试正常/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.CURRENT_STATE_RESULT;
   else if (completion && resultActionClass === actionClass && actionClass !== "OTHER") resultClass = RESULT_SEMANTIC_CLASS.ACTION_COMPLETION_RESULT;
   else if (/(?:恢复(?:正常|供电|运行)|正常运行|问题(?:已)?解决|故障原因(?:已)?定位|原因(?:已)?定位)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.STATE_CHANGE_RESULT;
   else if (/(?:共?确认\s*\d+|数量(?:已)?确认|状态(?:已)?确认)/u.test(resultText)) resultClass = RESULT_SEMANTIC_CLASS.INDEPENDENT_RESULT;
@@ -94,7 +98,7 @@ export const realizeDailyReportEntry = (source = {}) => {
   const results = unique(facts.results), negatives = unique(facts.negativeStatuses);
   const purposes = unique(facts.purposes), quantities = unique(facts.quantities);
   const location = locationsText(facts.locations), object = objectText(objects[0]);
-  const action = actions[0], issue = issues[0], result = results[0], negative = negatives[0];
+  const action = actions[0], pending=(facts.actionStates||[]).find(entry=>entry.state==="PENDING"||entry.state==="PLANNED"), issue = issues[0], result = results[0], negative = negatives[0];
   const resultSemantic = classifyActionResult({action,result});
   const purpose = purposes[0], quantity = quantities[0], natural = naturalDescription(source, facts);
   let text, wrapperApplied = false;
@@ -132,14 +136,17 @@ export const realizeDailyReportEntry = (source = {}) => {
   }
 
   if (result && !text.includes(result) && !resultSemantic.overlap) {
-    text += action ? `，${action}完成后${result}` : `，${result}`;
+    text += action && resultSemantic.resultClass !== RESULT_SEMANTIC_CLASS.CURRENT_STATE_RESULT ? `，${action}完成后${result}` : `，${result}`;
   }
   if (negative && !text.includes(negative)) text += `，目前${negative}`;
+  if (pending && !text.includes(pending.evidence)) text += `，${pending.evidence}`;
 
+  const candidateText=punctuate(text);
+  assertSemanticFactSafety({sourceFacts:facts,candidateText});
   return {
     itemKey: clean(source.itemKey || source.itemId || source.item_id),
     order: Number(source.order || 0),
-    text: punctuate(text),
+    text: candidateText,
     factDigest: clean(source.factDigest),
     generatorVersion: WORK_LOG_DAILY_REPORT_REALIZER_VERSION,
     phraseType:natural?.phraseType || classifyPhraseCompleteness({text:unique(facts.descriptions)[0],semanticRole:semanticRoleOf(source,facts)}),

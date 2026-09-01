@@ -479,7 +479,7 @@ test("RUNTIME-PARITY EdgeOne activates historical facts and preserves no-op repl
   assert.match(log.summary, /记录食堂显示屏断电情况/);
   assert.match(log.summary, /运动馆监控设备出现故障，现场对相关设备进行更换/);
   for (const item of log.items) {
-    assert.equal(item.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V1");
+    assert.equal(item.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V2_ACTION_STATE");
     assert.match(item.factDigest, /^facts-v1-/);
   }
   const before = JSON.stringify(log);
@@ -572,7 +572,7 @@ test("RUNTIME-PARITY Wrangler D1 and EdgeOne historical outputs are byte-identic
   assert.match(log.summary, /运动馆监控设备出现故障，现场对相关设备进行更换/);
   for (const item of log.items) {
     const generated = JSON.parse(item.generated_fields_json);
-    assert.equal(generated.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V1");
+    assert.equal(generated.plannerVersion, "WORK_LOG_CHINESE_PLANNER_V2_ACTION_STATE");
     assert.match(generated.factDigest, /^facts-v1-/);
   }
   const edge = edgeHarness(false);

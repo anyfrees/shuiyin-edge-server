@@ -421,7 +421,7 @@ export class WorkLogHttpService {
             decodeURIComponent(m[1]),
           );
         return x
-          ? json({ ok: true, workLog: x })
+          ? json({ ok: true, workLog: { ...x, aiPolish: this.aiPolishService?.state(subjectId, decodeURIComponent(m[1])) || null } })
           : fail("WORK_LOG_NOT_FOUND", 404);
       }
       if (m && method === "PATCH") {
@@ -442,7 +442,14 @@ export class WorkLogHttpService {
       }
       if (m && method === "DELETE") {
         const { subjectId } = await this.auth(request),
-          version = int(url.searchParams.get("ifVersion"), -1, 1, 2147483647);
+          version = int(url.searchParams.get("ifVersion"), -1, 1, 2147483647),
+          permanent = url.searchParams.get("permanent") === "true";
+        if (permanent) {
+          await this.repository.purgeDeletedWorkLog(
+            subjectId, decodeURIComponent(m[1]), version,
+          );
+          return json(null, 204);
+        }
         if (
           !(await this.repository.getWorkLog(
             subjectId,
@@ -450,22 +457,28 @@ export class WorkLogHttpService {
           ))
         )
           return json(null, 204);
-        await this.repository.softDeleteWorkLog(
-          subjectId,
-          decodeURIComponent(m[1]),
-          version,
-        );
+        await this.repository.softDeleteWorkLog(subjectId, decodeURIComponent(m[1]), version);
         return json(null, 204);
+      }
+      m = path.match(/^\/v1\/work-logs\/([^/]+)\/ai-polish\/restore$/);
+      if (m && method === "POST") {
+        const { subjectId } = await this.auth(request);
+        if (!(await this.authorize(subjectId, "WORK_LOG_AI_V1"))) throw new WorkLogError("WORK_LOG_AI_NOT_ENTITLED", 403);
+        const result = this.aiPolishService?.restore(subjectId, decodeURIComponent(m[1]));
+        if (!result || result.status !== "RESTORED") throw new WorkLogError("WORK_LOG_AI_RESTORE_UNAVAILABLE", 409);
+        return json({ ok: true, restore: result, workLog: await this.repository.getWorkLog(subjectId, decodeURIComponent(m[1])) });
       }
       m = path.match(/^\/v1\/work-logs\/([^/]+)\/ai-polish$/);
       if (m && method === "POST") {
         const { subjectId } = await this.auth(request);
         if (!(await this.authorize(subjectId, "WORK_LOG_AI_V1"))) throw new WorkLogError("WORK_LOG_AI_NOT_ENTITLED", 403);
-        const result = await this.aiPolishService?.polish(subjectId, decodeURIComponent(m[1]), { mode: "MANUAL" });
+        const body = await this.body(request), preview = body.preview !== false;
+        const result = await this.aiPolishService?.polish(subjectId, decodeURIComponent(m[1]), { mode: "MANUAL", apply: !preview, expectedVersion: body.baseVersion, expectedDigest: body.sourceDigest });
         if (!result || result.status === "DISABLED") throw new WorkLogError("WORK_LOG_AI_DISABLED", 503);
-        return json({ ok: true, polish: result, workLog: await this.repository.getWorkLog(subjectId, decodeURIComponent(m[1])) });
+        const workLog = await this.repository.getWorkLog(subjectId, decodeURIComponent(m[1]));
+        return json({ ok: true, polish: result, workLog: workLog ? { ...workLog, aiPolish: this.aiPolishService?.state(subjectId, decodeURIComponent(m[1])) || null } : null });
       }
-      m = path.match(/^\/v1\/work-logs\/([^/]+)\/(finalize|archive|restore)$/);
+      m = path.match(/^\/v1\/work-logs\/([^/]+)\/(finalize|archive|restore|reopen)$/);
       if (m && method === "POST") {
         const { subjectId } = await this.auth(request),
           body = await this.body(request),
@@ -474,6 +487,7 @@ export class WorkLogHttpService {
             finalize: "finalizeWorkLog",
             archive: "archiveWorkLog",
             restore: "restoreWorkLog",
+            reopen: "reopenWorkLog",
           }[m[2]];
         if (m[2] === "finalize") {
           const current = await this.repository.getWorkLog(
@@ -614,6 +628,10 @@ export class WorkLogHttpService {
       }
       if (m && method === "DELETE") {
         const { subjectId } = await this.auth(request);
+        if (url.searchParams.get("permanent") === "1") {
+          await this.repository.deleteArchivedProject(subjectId, decodeURIComponent(m[1]));
+          return json({ ok: true, deleted: true });
+        }
         return json({
           ok: true,
           project: await this.repository.archiveProject(
