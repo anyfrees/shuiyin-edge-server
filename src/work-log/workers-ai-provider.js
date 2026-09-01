@@ -1,7 +1,7 @@
 // @ts-nocheck
-export const WORK_LOG_POLISH_PROMPT_VERSION = "WORK_LOG_POLISH_PROMPT_V8_SOURCE_GOVERNED";
+export const WORK_LOG_POLISH_PROMPT_VERSION = "WORK_LOG_POLISH_PROMPT_V9_CAPTURE_FIRST";
 export const DEFAULT_WORK_LOG_AI_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
-const SYSTEM = `你是中文工作日志编辑器，不是工作事实生成器。输入已完成来源选择、语义去重和事实验证。只对 SAFE DRAFT 做最小幅度中文润色，只可调整语序、连接词、重复、标点和书面表达。ALLOWED CLAIMS 是全部事实边界；REQUIRED CLAIMS 必须保留；FORBIDDEN CLAIMS 绝对不得出现。不得新增或改变动作、结果、状态、数量、地点、对象、待办和观察状态；待办不得升级为处理中或已完成。语义重复只表达一次。禁止输出“结果为”“工作内容为”“问题原因为”“工作记录”“事项为”“地点为”等字段名。风格应简洁、客观、自然、专业。只返回 JSON。`;
+const SYSTEM = `请根据每条原始工作记录整理为自然、专业、简洁的中文日报。Capture 或人工记录是表达来源，原子事实由服务端在输出后校验。严格保留日期、时间、地点、用户原始事实和待办状态，不得新增动作、原因、结果、设备、地点或数量。原句自然时只做必要的语序、用词和标点优化，不要重复同一事实，不要输出字段名。待办不得升级为处理中或已完成。按原时间顺序输出编号日报并保留完整时间前缀。只返回 JSON。`;
 const privateKey = /(?:photo|image|base64|sha|jilu|capture.?id|subject.?id|public.?id|token|session|path|provenance|verify|latitude|longitude|\blat\b|\blng\b)/i;
 const assertSafe = (value) => { if (Array.isArray(value)) return value.forEach(assertSafe); if (!value || typeof value !== "object") return; for (const [key, child] of Object.entries(value)) { if (privateKey.test(key)) throw Object.assign(new Error("AI_PRIVATE_FIELD_REJECTED"), { code: "AI_PRIVATE_FIELD_REJECTED" }); assertSafe(child); } };
 
@@ -13,9 +13,9 @@ export class CloudflareWorkersAIRefinementProvider {
     const serialized=JSON.stringify(input),inputBytes=new TextEncoder().encode(serialized).length;
     if(inputBytes>this.maxInputBytes)throw Object.assign(new Error("AI_INPUT_TOO_LARGE"),{code:"AI_INPUT_TOO_LARGE"});
     if(Math.ceil(serialized.length/2)>this.maxInputTokens)throw Object.assign(new Error("AI_INPUT_TOKEN_LIMIT"),{code:"AI_INPUT_TOKEN_LIMIT"});
-    const facts=input.input||input,keys=(facts.items||[]).map((item)=>item.itemKey),safeText={type:"string"};
+    const facts=input.input||input,keys=(facts.entries||facts.items||[]).map((item)=>item.itemKey),safeText={type:"string"};
     const response = await this.ai.run(this.model, {
-      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: `/no_think\n${JSON.stringify({ promptVersion: WORK_LOG_POLISH_PROMPT_VERSION, instruction: "在不改变任何事实含义的情况下，对 SAFE DRAFT 做最小幅度中文润色。", ...input.constrainedRewrite, facts: input.input || input, output: { summary: "string", items: [{ itemKey: "string", suggestedTitle: "string", suggestedContent: "string" }] } })}` }],
+      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: `/no_think\n${JSON.stringify({ promptVersion: WORK_LOG_POLISH_PROMPT_VERSION, instruction: "仅依据原始记录做最小幅度自然化，不重复事实。", facts: input.input || input, output: { summary: "string", items: [{ itemKey: "string", suggestedTitle: "string", suggestedContent: "string" }] } })}` }],
       temperature: this.temperature,
       max_tokens: this.maxTokens,
       chat_template_kwargs: { enable_thinking: false },
